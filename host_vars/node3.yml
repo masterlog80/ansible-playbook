@@ -1,0 +1,7 @@
+---
+# Host-specific network configuration for node3
+# Adjust static_ip and network_interface to match the actual hardware.
+static_ip: 192.168.10.12
+network_interface: eth0
+gateway: 192.168.10.1
+subnet_prefix: 24

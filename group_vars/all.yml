@@ -1,0 +1,80 @@
+---
+# =============================================================================
+# Variables shared by ALL hosts
+# =============================================================================
+
+# ---------------------------------------------------------------------------
+# Package list
+# ---------------------------------------------------------------------------
+packages:
+  - htop
+  - btop
+  - nvme-cli
+  - ca-certificates
+  - curl
+  - iputils-ping
+  - dnsutils
+  - ssh-import-id
+  - avahi-daemon
+  - usb-modeswitch
+  - usb-modeswitch-data
+  - net-tools
+  - vim
+  - nmap
+  - libusb-1.0-0-dev
+  - iperf3
+  - expect
+  - zip
+  - pv
+  - unzip
+  - html2text
+  - build-essential
+  - software-properties-common
+  - openvswitch-switch
+  - nano
+  - avahi-utils
+  - libnss-mdns
+  - zsh
+  - open-iscsi
+  - gpg
+  - apt-transport-https
+  - cifs-utils
+  - git
+  - python3-pygments   # required by the colorize zsh plugin
+
+# ---------------------------------------------------------------------------
+# Timezone
+# ---------------------------------------------------------------------------
+timezone: Asia/Tokyo
+
+# ---------------------------------------------------------------------------
+# DNS & Domain
+# ---------------------------------------------------------------------------
+dns_servers:
+  - 192.168.10.3
+  - 192.168.10.4
+  - 1.1.1.1
+
+dns_search_domain: salvetti.info
+
+# ---------------------------------------------------------------------------
+# Admin user
+# ---------------------------------------------------------------------------
+admin_user: lorenzo
+admin_github_user: masterlog80
+
+# ---------------------------------------------------------------------------
+# K3S
+# ---------------------------------------------------------------------------
+# Set to a specific version (e.g. "v1.29.3+k3s1") or leave empty for latest.
+k3s_version: ""
+# Extra flags passed to the K3S installer (e.g. "--disable traefik").
+k3s_install_flags: ""
+
+# ---------------------------------------------------------------------------
+# Network (defaults – override per host in host_vars/)
+# ---------------------------------------------------------------------------
+# Subnet prefix length (e.g. 24 for /24).
+subnet_prefix: 24
+# Default gateway.
+gateway: 192.168.10.1

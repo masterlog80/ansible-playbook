@@ -1,0 +1,19 @@
+# Managed by Ansible – do not edit manually.
+# Template: templates/netplan.yml.j2
+network:
+  version: 2
+  ethernets:
+    {{ network_interface }}:
+      dhcp4: false
+      addresses:
+        - {{ static_ip }}/{{ subnet_prefix }}
+      routes:
+        - to: default
+          via: {{ gateway }}
+      nameservers:
+        addresses:
+{% for dns in dns_servers %}
+          - {{ dns }}
+{% endfor %}
+        search:
+          - {{ dns_search_domain }}
