@@ -16,6 +16,7 @@
 #   11. ZSH – Oh My Zsh, Powerlevel10k, plugins
 #   12. Getty autologin for lorenzo
 #   13. Static IP via Netplan
+#   14. Hostname
 # =============================================================================
 
 - name: System bootstrap
@@ -355,3 +356,17 @@
         group: root
         mode: "0600"
       notify: Apply netplan
+
+    # -------------------------------------------------------------------------
+    # 14. Hostname
+    # -------------------------------------------------------------------------
+    - name: Set hostname to {{ hostname }}
+      ansible.builtin.hostname:
+        name: "{{ hostname }}"
+
+    - name: Ensure hostname is in /etc/hosts
+      ansible.builtin.lineinfile:
+        path: /etc/hosts
+        regexp: '^127\.0\.1\.1\s+'
+        line: "127.0.1.1 {{ hostname }}"
+        state: present
