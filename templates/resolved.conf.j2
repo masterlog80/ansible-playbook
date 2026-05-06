@@ -1,0 +1,5 @@
+# Managed by Ansible – do not edit manually.
+# Template: templates/resolved.conf.j2
+[Resolve]
+DNS={{ dns_servers | join(' ') }}
+Domains={{ dns_search_domain }}

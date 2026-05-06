@@ -1,0 +1,357 @@
+---
+# =============================================================================
+# site.yml – System bootstrap playbook
+# =============================================================================
+# Covers:
+#   1.  System update & dist-upgrade
+#   2.  Package installation
+#   3.  Disable swap
+#   4.  K3S installation
+#   5.  Timezone (Asia/Tokyo)
+#   6.  DNS / Domain (systemd-resolved)
+#   7.  UPS udev rule
+#   8.  Disable sysstat
+#   9.  User management (delete non-root, create lorenzo + sudoers + GitHub key)
+#   10. Disable root password & SSH login
+#   11. ZSH – Oh My Zsh, Powerlevel10k, plugins
+#   12. Getty autologin for lorenzo
+#   13. Static IP via Netplan
+# =============================================================================
+
+- name: System bootstrap
+  hosts: all
+  become: true
+
+  handlers:
+    - name: Restart sshd
+      ansible.builtin.service:
+        name: ssh
+        state: restarted
+
+    - name: Reload systemd
+      ansible.builtin.systemd:
+        daemon_reload: true
+
+    - name: Restart systemd-resolved
+      ansible.builtin.service:
+        name: systemd-resolved
+        state: restarted
+
+    - name: Apply netplan
+      ansible.builtin.command: netplan apply
+      changed_when: true
+
+    - name: Reload udev
+      ansible.builtin.command: udevadm control --reload-rules
+      changed_when: true
+
+  # ---------------------------------------------------------------------------
+  # 1. System Update
+  # ---------------------------------------------------------------------------
+  tasks:
+    - name: Update apt cache
+      ansible.builtin.apt:
+        update_cache: true
+        cache_valid_time: 3600
+
+    - name: Dist-upgrade all packages
+      ansible.builtin.apt:
+        upgrade: dist
+        autoremove: true
+        autoclean: true
+
+    # -------------------------------------------------------------------------
+    # 2. Package Installation
+    # -------------------------------------------------------------------------
+    - name: Install required packages
+      ansible.builtin.apt:
+        name: "{{ packages }}"
+        state: present
+
+    # -------------------------------------------------------------------------
+    # 3. Disable swap
+    # -------------------------------------------------------------------------
+    - name: Disable all swap immediately
+      ansible.builtin.command: swapoff -a
+      register: swapoff_result
+      changed_when: swapoff_result.rc == 0
+
+    - name: Remove swap entries from /etc/fstab
+      ansible.builtin.replace:
+        path: /etc/fstab
+        regexp: '^([^#\n].*?\sswap\s+\S+\s+.*)$'
+        replace: '# \1'
+
+    - name: Disable systemd swap units
+      ansible.builtin.shell: |
+        units=$(systemctl --type swap --all --no-legend | awk '{print $1}')
+        if [ -n "$units" ]; then
+          echo "$units" | xargs systemctl mask --now
+          echo "changed"
+        fi
+      register: swap_units_result
+      changed_when: "'changed' in swap_units_result.stdout"
+
+    # -------------------------------------------------------------------------
+    # 4. Install K3S
+    # -------------------------------------------------------------------------
+    # Security note: the K3S installer is fetched directly from https://get.k3s.io.
+    # When pinning a specific version via k3s_version, you can additionally verify
+    # the binary checksum from the official release page at:
+    # https://github.com/k3s-io/k3s/releases
+    - name: Download K3S install script
+      ansible.builtin.get_url:
+        url: https://get.k3s.io
+        dest: /tmp/k3s-install.sh
+        mode: "0755"
+
+    - name: Run K3S install script
+      ansible.builtin.shell: /tmp/k3s-install.sh
+      environment:
+        INSTALL_K3S_VERSION: "{{ k3s_version }}"
+        INSTALL_K3S_EXEC: "{{ k3s_install_flags }}"
+      args:
+        creates: /usr/local/bin/k3s
+
+    # -------------------------------------------------------------------------
+    # 5. Timezone
+    # -------------------------------------------------------------------------
+    - name: Set timezone to {{ timezone }}
+      community.general.timezone:
+        name: "{{ timezone }}"
+
+    # -------------------------------------------------------------------------
+    # 6. DNS & Domain via systemd-resolved
+    # -------------------------------------------------------------------------
+    - name: Deploy systemd-resolved configuration
+      ansible.builtin.template:
+        src: templates/resolved.conf.j2
+        dest: /etc/systemd/resolved.conf
+        owner: root
+        group: root
+        mode: "0644"
+      notify: Restart systemd-resolved
+
+    - name: Ensure systemd-resolved is running and enabled
+      ansible.builtin.service:
+        name: systemd-resolved
+        state: started
+        enabled: true
+
+    # -------------------------------------------------------------------------
+    # 7. UPS udev rule
+    # -------------------------------------------------------------------------
+    - name: Deploy UPS udev rule
+      ansible.builtin.copy:
+        dest: /etc/udev/rules.d/99-ups.rules
+        content: |
+          SUBSYSTEM=="usb", ATTR{idVendor}=="051d", ATTR{idProduct}=="0002", SYMLINK+="ups-network"
+        owner: root
+        group: root
+        mode: "0644"
+      notify: Reload udev
+
+    # -------------------------------------------------------------------------
+    # 8. Disable sysstat
+    # -------------------------------------------------------------------------
+    - name: Stop and disable sysstat service
+      ansible.builtin.service:
+        name: sysstat
+        state: stopped
+        enabled: false
+      ignore_errors: true   # service may not be present on all systems
+
+    # -------------------------------------------------------------------------
+    # 9. User management
+    # -------------------------------------------------------------------------
+
+    # Create the admin user first so that there is always an active admin
+    # account even while the playbook is running.
+    - name: Create admin user {{ admin_user }}
+      ansible.builtin.user:
+        name: "{{ admin_user }}"
+        shell: /bin/zsh
+        create_home: true
+        state: present
+
+    - name: Grant {{ admin_user }} passwordless sudo
+      ansible.builtin.copy:
+        dest: "/etc/sudoers.d/{{ admin_user }}"
+        content: "{{ admin_user }} ALL=(ALL) NOPASSWD:ALL\n"
+        owner: root
+        group: root
+        mode: "0440"
+        validate: visudo -cf %s
+
+    - name: Add SSH public key from GitHub for {{ admin_user }}
+      ansible.posix.authorized_key:
+        user: "{{ admin_user }}"
+        key: "https://github.com/{{ admin_github_user }}.keys"
+        state: present
+
+    # Collect users to delete AFTER the admin user is ready.
+    - name: Gather list of non-root / non-admin regular users
+      ansible.builtin.shell: |
+        getent passwd | awk -F: -v admin="{{ admin_user }}" \
+          '$3 >= 1000 && $1 != "nobody" && $1 != admin {print $1}'
+      register: users_to_delete
+      changed_when: false
+
+    - name: Gracefully stop processes for users that will be deleted
+      ansible.builtin.shell: |
+        pkill -TERM -u "{{ item }}" || true
+      loop: "{{ users_to_delete.stdout_lines }}"
+      when: users_to_delete.stdout_lines | length > 0
+      ignore_errors: true
+
+    - name: Wait briefly for processes to exit
+      ansible.builtin.pause:
+        seconds: 3
+      when: users_to_delete.stdout_lines | length > 0
+
+    - name: Force-kill remaining processes for users that will be deleted
+      ansible.builtin.shell: |
+        pkill -KILL -u "{{ item }}" || true
+      loop: "{{ users_to_delete.stdout_lines }}"
+      when: users_to_delete.stdout_lines | length > 0
+      ignore_errors: true
+
+    - name: Remove non-admin regular users and their home directories
+      ansible.builtin.user:
+        name: "{{ item }}"
+        state: absent
+        remove: true
+        force: true
+      loop: "{{ users_to_delete.stdout_lines }}"
+      when: users_to_delete.stdout_lines | length > 0
+
+    # -------------------------------------------------------------------------
+    # 10. Disable root password & SSH login
+    # -------------------------------------------------------------------------
+    - name: Lock root account (disable password login)
+      ansible.builtin.user:
+        name: root
+        password: "!"
+        password_lock: true
+
+    - name: Disable root SSH login
+      ansible.builtin.lineinfile:
+        path: /etc/ssh/sshd_config
+        regexp: '^#?PermitRootLogin'
+        line: "PermitRootLogin no"
+        state: present
+      notify: Restart sshd
+
+    # -------------------------------------------------------------------------
+    # 11. ZSH – Oh My Zsh, Powerlevel10k, plugins
+    # -------------------------------------------------------------------------
+    - name: Check if Oh My Zsh is already installed for {{ admin_user }}
+      ansible.builtin.stat:
+        path: "/home/{{ admin_user }}/.oh-my-zsh"
+      register: omzsh_stat
+
+    - name: Install Oh My Zsh for {{ admin_user }}
+      # Security note: the installer is fetched from the official ohmyzsh repo.
+      # RUNZSH=no and CHSH=no prevent the script from switching the shell
+      # interactively; the shell is already set via the user module above.
+      ansible.builtin.shell: |
+        RUNZSH=no CHSH=no \
+        sh -c "$(curl -fsSL https://raw.githubusercontent.com/ohmyzsh/ohmyzsh/master/tools/install.sh)"
+      become_user: "{{ admin_user }}"
+      environment:
+        HOME: "/home/{{ admin_user }}"
+      args:
+        creates: "/home/{{ admin_user }}/.oh-my-zsh"
+      when: not omzsh_stat.stat.exists
+
+    - name: Clone Powerlevel10k theme
+      ansible.builtin.git:
+        repo: https://github.com/romkatv/powerlevel10k.git
+        dest: "/home/{{ admin_user }}/.oh-my-zsh/custom/themes/powerlevel10k"
+        depth: 1
+        update: false
+      become_user: "{{ admin_user }}"
+
+    - name: Clone zsh-syntax-highlighting plugin
+      ansible.builtin.git:
+        repo: https://github.com/zsh-users/zsh-syntax-highlighting.git
+        dest: "/home/{{ admin_user }}/.oh-my-zsh/custom/plugins/zsh-syntax-highlighting"
+        depth: 1
+        update: false
+      become_user: "{{ admin_user }}"
+
+    - name: Clone zsh-autosuggestions plugin
+      ansible.builtin.git:
+        repo: https://github.com/zsh-users/zsh-autosuggestions.git
+        dest: "/home/{{ admin_user }}/.oh-my-zsh/custom/plugins/zsh-autosuggestions"
+        depth: 1
+        update: false
+      become_user: "{{ admin_user }}"
+
+    - name: Deploy .zshrc for {{ admin_user }}
+      ansible.builtin.template:
+        src: templates/zshrc.j2
+        dest: "/home/{{ admin_user }}/.zshrc"
+        owner: "{{ admin_user }}"
+        group: "{{ admin_user }}"
+        mode: "0644"
+
+    # -------------------------------------------------------------------------
+    # 12. Getty autologin for {{ admin_user }}
+    # -------------------------------------------------------------------------
+    # NOTE: The problem statement specifies /lib/systemd/system/ (the vendor
+    # unit directory). For purely local customisations the canonical path is
+    # /etc/systemd/system/getty@.service.d/override.conf, which takes
+    # precedence over /lib. Both locations are created here so that the
+    # autologin setting is in effect regardless of which path the runtime uses.
+    - name: Ensure getty override directory exists (/lib)
+      ansible.builtin.file:
+        path: /lib/systemd/system/getty@.service.d
+        state: directory
+        owner: root
+        group: root
+        mode: "0755"
+
+    - name: Ensure getty override directory exists (/etc)
+      ansible.builtin.file:
+        path: /etc/systemd/system/getty@.service.d
+        state: directory
+        owner: root
+        group: root
+        mode: "0755"
+
+    - name: Configure getty autologin for {{ admin_user }} (/lib)
+      ansible.builtin.copy:
+        dest: /lib/systemd/system/getty@.service.d/override.conf
+        content: |
+          [Service]
+          ExecStart=
+          ExecStart=-/sbin/agetty --autologin {{ admin_user }} --noclear %I $TERM
+        owner: root
+        group: root
+        mode: "0644"
+      notify: Reload systemd
+
+    - name: Configure getty autologin for {{ admin_user }} (/etc – canonical)
+      ansible.builtin.copy:
+        dest: /etc/systemd/system/getty@.service.d/override.conf
+        content: |
+          [Service]
+          ExecStart=
+          ExecStart=-/sbin/agetty --autologin {{ admin_user }} --noclear %I $TERM
+        owner: root
+        group: root
+        mode: "0644"
+      notify: Reload systemd
+
+    # -------------------------------------------------------------------------
+    # 13. Static IP via Netplan
+    # -------------------------------------------------------------------------
+    - name: Deploy Netplan static-IP configuration
+      ansible.builtin.template:
+        src: templates/netplan.yml.j2
+        dest: /etc/netplan/01-ansible-static.yaml
+        owner: root
+        group: root
+        mode: "0600"
+      notify: Apply netplan
