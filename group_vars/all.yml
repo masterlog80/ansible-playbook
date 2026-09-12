@@ -41,7 +41,6 @@ packages:
   - cifs-utils
   - git
   - python3-pygments   # required by the colorize zsh plugin
-  - chrony
 
 # ---------------------------------------------------------------------------
 # Timezone
@@ -59,9 +58,15 @@ dns_servers:
 dns_search_domain: salvetti.info
 
 # ---------------------------------------------------------------------------
-# NTP / Chrony
+# NTP
 # ---------------------------------------------------------------------------
-# Prefer the local NTP server. Ubuntu NTP is used as the backup source pool.
+# NTP client implementation:
+#   auto                Detect the currently active NTP implementation.
+#   chrony              Force Chrony.
+#   systemd-timesyncd   Force systemd-timesyncd.
+ntp_client: auto
+
+# Prefer the local NTP server. Ubuntu NTP is used as the fallback source.
 ntp_primary: 192.168.10.8
 ntp_fallback: ntp.ubuntu.com
 
