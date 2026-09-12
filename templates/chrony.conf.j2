@@ -1,0 +1,15 @@
+# =============================================================================
+# chrony.conf – managed by Ansible
+# =============================================================================
+# Preferred local NTP server with Ubuntu NTP as backup sources.
+
+server {{ ntp_primary }} iburst prefer
+pool {{ ntp_fallback }} iburst maxsources 4
+
+driftfile /var/lib/chrony/chrony.drift
+
+makestep 1.0 3
+rtcsync
+
+# Allow local chrony clients to query this host only if explicitly enabled.
+# This playbook configures the host as an NTP client by default.

@@ -8,15 +8,16 @@
 #   3.  Disable swap
 #   4.  K3S installation
 #   5.  Timezone (Asia/Tokyo)
-#   6.  DNS / Domain (systemd-resolved)
-#   7.  UPS udev rule
-#   8.  Disable sysstat
-#   9.  User management (delete non-root, create lorenzo + sudoers + GitHub key)
-#   10. Disable root password & SSH login
-#   11. ZSH – Oh My Zsh, Powerlevel10k, plugins
-#   12. Getty autologin for lorenzo
-#   13. Static IP via Netplan
-#   14. Hostname
+#   6.  NTP / Chrony
+#   7.  DNS / Domain (systemd-resolved)
+#   8.  UPS udev rule
+#   9.  Disable sysstat
+#   10. User management (delete non-root, create lorenzo + sudoers + GitHub key)
+#   11. Disable root password & SSH login
+#   12. ZSH – Oh My Zsh, Powerlevel10k, plugins
+#   13. Getty autologin for lorenzo
+#   14. Static IP via Netplan
+#   15. Hostname
 # =============================================================================
 
 - name: System bootstrap
@@ -32,6 +33,11 @@
     - name: Reload systemd
       ansible.builtin.systemd:
         daemon_reload: true
+
+    - name: Restart chrony
+      ansible.builtin.service:
+        name: chrony
+        state: restarted
 
     - name: Restart systemd-resolved
       ansible.builtin.service:
@@ -122,7 +128,30 @@
         name: "{{ timezone }}"
 
     # -------------------------------------------------------------------------
-    # 6. DNS & Domain via systemd-resolved
+    # 6. NTP / Chrony
+    # -------------------------------------------------------------------------
+    - name: Ensure Chrony is installed
+      ansible.builtin.apt:
+        name: chrony
+        state: present
+
+    - name: Deploy Chrony configuration
+      ansible.builtin.template:
+        src: templates/chrony.conf.j2
+        dest: /etc/chrony/chrony.conf
+        owner: root
+        group: root
+        mode: "0644"
+      notify: Restart chrony
+
+    - name: Ensure Chrony is running and enabled
+      ansible.builtin.service:
+        name: chrony
+        state: started
+        enabled: true
+
+    # -------------------------------------------------------------------------
+    # 7. DNS & Domain via systemd-resolved
     # -------------------------------------------------------------------------
     - name: Deploy systemd-resolved configuration
       ansible.builtin.template:
@@ -140,7 +169,7 @@
         enabled: true
 
     # -------------------------------------------------------------------------
-    # 7. UPS udev rule
+    # 8. UPS udev rule
     # -------------------------------------------------------------------------
     - name: Deploy UPS udev rule
       ansible.builtin.copy:
@@ -153,7 +182,7 @@
       notify: Reload udev
 
     # -------------------------------------------------------------------------
-    # 8. Disable sysstat
+    # 9. Disable sysstat
     # -------------------------------------------------------------------------
     - name: Stop and disable sysstat service
       ansible.builtin.service:
@@ -163,7 +192,7 @@
       ignore_errors: true   # service may not be present on all systems
 
     # -------------------------------------------------------------------------
-    # 9. User management
+    # 10. User management
     # -------------------------------------------------------------------------
 
     # Create the admin user first so that there is always an active admin
@@ -227,7 +256,7 @@
       when: users_to_delete.stdout_lines | length > 0
 
     # -------------------------------------------------------------------------
-    # 10. Disable root password & SSH login
+    # 11. Disable root password & SSH login
     # -------------------------------------------------------------------------
     - name: Lock root account (disable password login)
       ansible.builtin.user:
@@ -244,7 +273,7 @@
       notify: Restart sshd
 
     # -------------------------------------------------------------------------
-    # 11. ZSH – Oh My Zsh, Powerlevel10k, plugins
+    # 12. ZSH – Oh My Zsh, Powerlevel10k, plugins
     # -------------------------------------------------------------------------
     - name: Check if Oh My Zsh is already installed for {{ admin_user }}
       ansible.builtin.stat:
@@ -298,7 +327,7 @@
         mode: "0644"
 
     # -------------------------------------------------------------------------
-    # 12. Getty autologin for {{ admin_user }}
+    # 13. Getty autologin for {{ admin_user }}
     # -------------------------------------------------------------------------
     # NOTE: The problem statement specifies /lib/systemd/system/ (the vendor
     # unit directory). For purely local customisations the canonical path is
@@ -346,7 +375,7 @@
       notify: Reload systemd
 
     # -------------------------------------------------------------------------
-    # 13. Static IP via Netplan
+    # 14. Static IP via Netplan
     # -------------------------------------------------------------------------
     - name: Deploy Netplan static-IP configuration
       ansible.builtin.template:
@@ -358,7 +387,7 @@
       notify: Apply netplan
 
     # -------------------------------------------------------------------------
-    # 14. Hostname
+    # 15. Hostname
     # -------------------------------------------------------------------------
     - name: Set hostname to {{ hostname }}
       ansible.builtin.hostname:
