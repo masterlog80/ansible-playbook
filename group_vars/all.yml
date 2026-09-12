@@ -41,6 +41,7 @@ packages:
   - cifs-utils
   - git
   - python3-pygments   # required by the colorize zsh plugin
+  - chrony
 
 # ---------------------------------------------------------------------------
 # Timezone
@@ -56,6 +57,13 @@ dns_servers:
   - 1.1.1.1
 
 dns_search_domain: salvetti.info
+
+# ---------------------------------------------------------------------------
+# NTP / Chrony
+# ---------------------------------------------------------------------------
+# Prefer the local NTP server. Ubuntu NTP is used as the backup source pool.
+ntp_primary: 192.168.10.8
+ntp_fallback: ntp.ubuntu.com
 
 # ---------------------------------------------------------------------------
 # Admin user
