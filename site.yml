@@ -8,12 +8,12 @@
 #   3.  Disable swap
 #   4.  K3S installation
 #   5.  Timezone (Asia/Tokyo)
-#   6.  NTP / Chrony
+#   6.  NTP (Chrony or systemd-timesyncd)
 #   7.  DNS / Domain (systemd-resolved)
 #   8.  UPS udev rule
 #   9.  Disable sysstat
 #   10. User management (delete non-root, create lorenzo + sudoers + GitHub key)
-#   11. Disable root password & SSH login
+#   11. Disable root SSH login (preserve root password)
 #   12. ZSH – Oh My Zsh, Powerlevel10k, plugins
 #   13. Getty autologin for lorenzo
 #   14. Static IP via Netplan
@@ -37,6 +37,11 @@
     - name: Restart chrony
       ansible.builtin.service:
         name: chrony
+        state: restarted
+
+    - name: Restart systemd-timesyncd
+      ansible.builtin.service:
+        name: systemd-timesyncd
         state: restarted
 
     - name: Restart systemd-resolved
@@ -128,12 +133,44 @@
         name: "{{ timezone }}"
 
     # -------------------------------------------------------------------------
-    # 6. NTP / Chrony
+    # 6. NTP
     # -------------------------------------------------------------------------
-    - name: Ensure Chrony is installed
+    # Detect the NTP implementation before installing/configuring either one.
+    # With ntp_client=auto, an already-active implementation is preserved.
+    # If neither is active, Chrony is selected as the default.
+    - name: Gather service facts for NTP detection
+      ansible.builtin.service_facts:
+
+    - name: Select NTP client automatically
+      ansible.builtin.set_fact:
+        selected_ntp_client: >-
+          {{ 'chrony' if ansible_facts.services.get('chrony.service', {}).get('state') == 'running'
+             else 'systemd-timesyncd' if ansible_facts.services.get('systemd-timesyncd.service', {}).get('state') == 'running'
+             else 'chrony' }}
+      when: ntp_client == 'auto'
+
+    - name: Select configured NTP client
+      ansible.builtin.set_fact:
+        selected_ntp_client: "{{ ntp_client }}"
+      when: ntp_client != 'auto'
+
+    - name: Validate selected NTP client
+      ansible.builtin.assert:
+        that:
+          - selected_ntp_client in ['chrony', 'systemd-timesyncd']
+        fail_msg: "ntp_client must be 'auto', 'chrony', or 'systemd-timesyncd'."
+
+    - name: Install Chrony when selected
       ansible.builtin.apt:
         name: chrony
         state: present
+      when: selected_ntp_client == 'chrony'
+
+    - name: Install systemd-timesyncd when selected
+      ansible.builtin.apt:
+        name: systemd-timesyncd
+        state: present
+      when: selected_ntp_client == 'systemd-timesyncd'
 
     - name: Deploy Chrony configuration
       ansible.builtin.template:
@@ -143,12 +180,49 @@
         group: root
         mode: "0644"
       notify: Restart chrony
+      when: selected_ntp_client == 'chrony'
 
     - name: Ensure Chrony is running and enabled
       ansible.builtin.service:
         name: chrony
         state: started
         enabled: true
+      when: selected_ntp_client == 'chrony'
+
+    - name: Deploy systemd-timesyncd configuration
+      ansible.builtin.template:
+        src: templates/systemd-timesyncd.conf.j2
+        dest: /etc/systemd/timesyncd.conf
+        owner: root
+        group: root
+        mode: "0644"
+      notify: Restart systemd-timesyncd
+      when: selected_ntp_client == 'systemd-timesyncd'
+
+    - name: Ensure systemd-timesyncd is running and enabled
+      ansible.builtin.service:
+        name: systemd-timesyncd
+        state: started
+        enabled: true
+      when: selected_ntp_client == 'systemd-timesyncd'
+
+    - name: Disable systemd-timesyncd when Chrony is selected
+      ansible.builtin.service:
+        name: systemd-timesyncd
+        state: stopped
+        enabled: false
+      when:
+        - selected_ntp_client == 'chrony'
+        - ansible_facts.services.get('systemd-timesyncd.service', {}).get('state') in ['running', 'stopped']
+
+    - name: Disable Chrony when systemd-timesyncd is selected
+      ansible.builtin.service:
+        name: chrony
+        state: stopped
+        enabled: false
+      when:
+        - selected_ntp_client == 'systemd-timesyncd'
+        - ansible_facts.services.get('chrony.service', {}).get('state') in ['running', 'stopped']
 
     # -------------------------------------------------------------------------
     # 7. DNS & Domain via systemd-resolved
@@ -256,14 +330,8 @@
       when: users_to_delete.stdout_lines | length > 0
 
     # -------------------------------------------------------------------------
-    # 11. Disable root password & SSH login
+    # 11. Disable root SSH login while preserving the root password
     # -------------------------------------------------------------------------
-    - name: Lock root account (disable password login)
-      ansible.builtin.user:
-        name: root
-        password: "!"
-        password_lock: true
-
     - name: Disable root SSH login
       ansible.builtin.lineinfile:
         path: /etc/ssh/sshd_config
