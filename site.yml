@@ -57,6 +57,9 @@
       ansible.builtin.command: udevadm control --reload-rules
       changed_when: true
 
+  # ---------------------------------------------------------------------------
+  # 1. System Update
+  # ---------------------------------------------------------------------------
   tasks:
     - name: Update apt cache
       ansible.builtin.apt:
@@ -69,11 +72,17 @@
         autoremove: true
         autoclean: true
 
+    # -------------------------------------------------------------------------
+    # 2. Package Installation
+    # -------------------------------------------------------------------------
     - name: Install required packages
       ansible.builtin.apt:
         name: "{{ packages }}"
         state: present
 
+    # -------------------------------------------------------------------------
+    # 3. Disable swap
+    # -------------------------------------------------------------------------
     - name: Disable all swap immediately
       ansible.builtin.command: swapoff -a
       register: swapoff_result
@@ -95,6 +104,13 @@
       register: swap_units_result
       changed_when: "'changed' in swap_units_result.stdout"
 
+    # -------------------------------------------------------------------------
+    # 4. Install K3S
+    # -------------------------------------------------------------------------
+    # Security note: the K3S installer is fetched directly from https://get.k3s.io.
+    # When pinning a specific version via k3s_version, you can additionally verify
+    # the binary checksum from the official release page at:
+    # https://github.com/k3s-io/k3s/releases
     - name: Download K3S install script
       ansible.builtin.get_url:
         url: https://get.k3s.io
@@ -109,10 +125,19 @@
       args:
         creates: /usr/local/bin/k3s
 
+    # -------------------------------------------------------------------------
+    # 5. Timezone
+    # -------------------------------------------------------------------------
     - name: Set timezone to {{ timezone }}
       community.general.timezone:
         name: "{{ timezone }}"
 
+    # -------------------------------------------------------------------------
+    # 6. NTP
+    # -------------------------------------------------------------------------
+    # Detect the NTP implementation before installing/configuring either one.
+    # With ntp_client=auto, an already-active implementation is preserved.
+    # If neither is active, Chrony is selected as the default.
     - name: Gather service facts for NTP detection
       ansible.builtin.service_facts:
 
@@ -199,6 +224,9 @@
         - selected_ntp_client == 'systemd-timesyncd'
         - ansible_facts.services.get('chrony.service', {}).get('state') in ['running', 'stopped']
 
+    # -------------------------------------------------------------------------
+    # 7. DNS & Domain via systemd-resolved
+    # -------------------------------------------------------------------------
     - name: Deploy systemd-resolved configuration
       ansible.builtin.template:
         src: templates/resolved.conf.j2
@@ -214,6 +242,9 @@
         state: started
         enabled: true
 
+    # -------------------------------------------------------------------------
+    # 8. UPS udev rule
+    # -------------------------------------------------------------------------
     - name: Deploy UPS udev rule
       ansible.builtin.copy:
         dest: /etc/udev/rules.d/99-ups.rules
@@ -224,6 +255,9 @@
         mode: "0644"
       notify: Reload udev
 
+    # -------------------------------------------------------------------------
+    # 9. Disable sysstat
+    # -------------------------------------------------------------------------
     - name: Stop and disable sysstat service
       ansible.builtin.service:
         name: sysstat
@@ -231,6 +265,34 @@
         enabled: false
       ignore_errors: true
 
+    - name: Remove sysstat log directory
+      ansible.builtin.file:
+        path: /var/log/sysstat
+        state: absent
+
+    # -------------------------------------------------------------------------
+    # Disable unwanted services
+    # -------------------------------------------------------------------------
+    - name: Stop and disable nvmf-autoconnect
+      ansible.builtin.service:
+        name: nvmf-autoconnect
+        state: stopped
+        enabled: false
+      ignore_errors: true
+
+    - name: Stop and disable dnsmasq
+      ansible.builtin.service:
+        name: dnsmasq
+        state: stopped
+        enabled: false
+      ignore_errors: true
+
+    # -------------------------------------------------------------------------
+    # 10. User management
+    # -------------------------------------------------------------------------
+
+    # Create the admin user first so that there is always an active admin
+    # account even while the playbook is running.
     - name: Create admin user {{ admin_user }}
       ansible.builtin.user:
         name: "{{ admin_user }}"
@@ -253,6 +315,7 @@
         key: "https://github.com/{{ admin_github_user }}.keys"
         state: present
 
+    # Collect users to delete AFTER the admin user is ready.
     - name: Gather list of non-root / non-admin regular users
       ansible.builtin.shell: |
         getent passwd | awk -F: -v admin="{{ admin_user }}" \
@@ -288,6 +351,9 @@
       loop: "{{ users_to_delete.stdout_lines }}"
       when: users_to_delete.stdout_lines | length > 0
 
+    # -------------------------------------------------------------------------
+    # 11. Disable root SSH login while preserving the root password
+    # -------------------------------------------------------------------------
     - name: Disable root SSH login
       ansible.builtin.lineinfile:
         path: /etc/ssh/sshd_config
@@ -296,12 +362,18 @@
         state: present
       notify: Restart sshd
 
+    # -------------------------------------------------------------------------
+    # 12. ZSH – Oh My Zsh, Powerlevel10k, plugins
+    # -------------------------------------------------------------------------
     - name: Check if Oh My Zsh is already installed for {{ admin_user }}
       ansible.builtin.stat:
         path: "/home/{{ admin_user }}/.oh-my-zsh"
       register: omzsh_stat
 
     - name: Install Oh My Zsh for {{ admin_user }}
+      # Security note: the installer is fetched from the official ohmyzsh repo.
+      # RUNZSH=no and CHSH=no prevent the script from switching the shell
+      # interactively; the shell is already set via the user module above.
       ansible.builtin.shell: |
         RUNZSH=no CHSH=no \
         sh -c "$(curl -fsSL https://raw.githubusercontent.com/ohmyzsh/ohmyzsh/master/tools/install.sh)"
@@ -344,7 +416,15 @@
         group: "{{ admin_user }}"
         mode: "0644"
 
-    - name: Ensure getty override directory exists
+    # -------------------------------------------------------------------------
+    # 13. Getty autologin for {{ admin_user }}
+    # -------------------------------------------------------------------------
+    # NOTE: The problem statement specifies /lib/systemd/system/ (the vendor
+    # unit directory). For purely local customisations the canonical path is
+    # /etc/systemd/system/getty@.service.d/override.conf, which takes
+    # precedence over /lib. Both locations are created here so that the
+    # autologin setting is in effect regardless of which path the runtime uses.
+    - name: Ensure getty override directory exists (/lib)
       ansible.builtin.file:
         path: /lib/systemd/system/getty@.service.d
         state: directory
@@ -352,7 +432,15 @@
         group: root
         mode: "0755"
 
-    - name: Configure getty autologin for {{ admin_user }}
+    - name: Ensure getty override directory exists (/etc)
+      ansible.builtin.file:
+        path: /etc/systemd/system/getty@.service.d
+        state: directory
+        owner: root
+        group: root
+        mode: "0755"
+
+    - name: Configure getty autologin for {{ admin_user }} (/lib)
       ansible.builtin.copy:
         dest: /lib/systemd/system/getty@.service.d/override.conf
         content: |
@@ -364,15 +452,7 @@
         mode: "0644"
       notify: Reload systemd
 
-    - name: Ensure canonical getty override directory exists
-      ansible.builtin.file:
-        path: /etc/systemd/system/getty@.service.d
-        state: directory
-        owner: root
-        group: root
-        mode: "0755"
-
-    - name: Configure canonical getty autologin for {{ admin_user }}
+    - name: Configure getty autologin for {{ admin_user }} (/etc – canonical)
       ansible.builtin.copy:
         dest: /etc/systemd/system/getty@.service.d/override.conf
         content: |
@@ -384,15 +464,28 @@
         mode: "0644"
       notify: Reload systemd
 
+    # -------------------------------------------------------------------------
+    # 14. Static IP via Netplan
+    # -------------------------------------------------------------------------
     - name: Deploy Netplan static-IP configuration
       ansible.builtin.template:
-        src: templates/netplan.yaml.j2
-        dest: /etc/netplan/99-ansible.yaml
+        src: templates/netplan.yml.j2
+        dest: /etc/netplan/01-ansible-static.yaml
         owner: root
         group: root
         mode: "0600"
       notify: Apply netplan
 
-    - name: Set hostname
+    # -------------------------------------------------------------------------
+    # 15. Hostname
+    # -------------------------------------------------------------------------
+    - name: Set hostname to {{ hostname }}
       ansible.builtin.hostname:
-        name: "{{ inventory_hostname }}"
+        name: "{{ hostname }}"
+
+    - name: Ensure hostname is in /etc/hosts
+      ansible.builtin.lineinfile:
+        path: /etc/hosts
+        regexp: '^127\.0\.1\.1\s+'
+        line: "127.0.1.1 {{ hostname }}"
+        state: present
