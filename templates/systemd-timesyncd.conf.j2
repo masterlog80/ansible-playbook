@@ -1,0 +1,8 @@
+# =============================================================================
+# systemd-timesyncd.conf – managed by Ansible
+# =============================================================================
+# Preferred local NTP server with Ubuntu NTP as fallback.
+
+[Time]
+NTP={{ ntp_primary }}
+FallbackNTP={{ ntp_fallback }}
