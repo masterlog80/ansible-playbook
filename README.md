@@ -215,6 +215,64 @@ ansible-playbook site.yml --tags docker
 
 ---
 
+## Adding a new role
+
+The K3S and Docker roles both follow the same recipe. To add another one (monitoring agent, NFS client, whatever), repeat these five steps — no new playbook file, no forking `site.yml`.
+
+**Worked example: adding a `monitoring_nodes` role that installs a Prometheus node-exporter.**
+
+1. **Add a group to `inventory/hosts.ini`** and put the relevant hosts in it (a host can belong to more than one role group):
+
+   ```ini
+   [monitoring_nodes]
+   node1
+   node3
+   ```
+
+2. **Add `group_vars/monitoring_nodes.yml`** for anything the role needs to be configurable:
+
+   ```yaml
+   ---
+   node_exporter_version: "1.8.2"
+   node_exporter_port: 9100
+   ```
+
+3. **Add a new play at the bottom of `site.yml`**, gated on the group, tagged with the role name:
+
+   ```yaml
+   # =============================================================================
+   # PLAY 4 — Monitoring role (hosts in [monitoring_nodes])
+   # =============================================================================
+   - name: Monitoring role
+     hosts: monitoring_nodes
+     become: true
+     tags: [monitoring]
+
+     tasks:
+       - name: Download node_exporter
+         ansible.builtin.get_url:
+           url: "https://github.com/prometheus/node_exporter/releases/download/v{{ node_exporter_version }}/node_exporter-{{ node_exporter_version }}.linux-amd64.tar.gz"
+           dest: /tmp/node_exporter.tar.gz
+         tags: [monitoring]
+
+       # ... unpack, install as a systemd service, etc.
+   ```
+
+   Tag every task in the new play with the role name (`monitoring`), the same way `k3s` and `docker` tag theirs — that's what makes `--tags monitoring` work later.
+
+4. **(Optional) Add per-host overrides** in `host_vars/<name>.yml` if a specific monitoring host needs something the group default doesn't cover.
+
+5. **Document it**: add a row to the Features list above, a row to the `group_vars/monitoring_nodes.yml` table under Configuration, and a row to the Tags table below (`monitoring` | `monitoring_nodes` only | node_exporter installation).
+
+That's the whole pattern. `site.yml` stays one file; `--tags <role>` and inventory group membership are what actually decide which devices get which software.
+
+### Rule of thumb: role play vs. baseline task
+
+- If **every** node should get it regardless of what else it runs → it belongs in the common baseline play (`hosts: all`), tagged `baseline` (+ a specific tag like `zsh`, `dns`, etc.).
+- If only **some** nodes should get it → it's a new role: new group, new play, new `group_vars/<group>.yml`, own tag. Don't add `when: some_flag_is_true` conditionals to the baseline play to fake this — a real inventory group is easier to reason about, easier to select from Semaphore UI (point a template's inventory/tag at the group), and keeps `--tags <role>` working correctly.
+
+---
+
 ## Running from Semaphore UI
 
 If you're driving this playbook from a UI (e.g. [ansible-docker](https://github.com/masterlog80/ansible-docker)'s Semaphore UI stack) rather than the CLI, the role groups map directly onto task templates:
