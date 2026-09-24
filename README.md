@@ -1,23 +1,40 @@
 # ansible-copilot
 
-An Ansible playbook for bootstrapping a fleet of Linux nodes (Debian/Ubuntu-based) from a fresh OS image to a fully configured K3S-ready state. Covers system updates, package installation, hardening, user management, networking, and shell environment setup.
+An Ansible playbook for bootstrapping a fleet of Linux nodes (Debian/Ubuntu-based) from a fresh OS image to a fully configured, role-specific state. Covers system updates, package installation, hardening, user management, networking, shell environment setup — plus a per-node choice of **K3S** or **Docker** (or both, or neither) driven entirely by inventory group membership.
+
+---
+
+## Design: common baseline + role groups
+
+One playbook (`site.yml`), three plays:
+
+| Play | Runs on | What it does |
+|------|---------|---------------|
+| `System bootstrap (common baseline)` | `hosts: all` | Updates, packages, swap, timezone, NTP, DNS, UPS udev rule, sysstat, users, SSH hardening, zsh, autologin, static IP, hostname — every managed node gets this |
+| `K3S role` | `hosts: k3s_nodes` | Installs K3S — only on hosts in the `[k3s_nodes]` inventory group |
+| `Docker role` | `hosts: docker_nodes` | Installs Docker Engine + Compose plugin — only on hosts in the `[docker_nodes]` inventory group |
+
+**Which device gets what is decided by inventory group membership, not by writing a separate playbook per device.** A host can be in `k3s_nodes`, `docker_nodes`, both, or neither (baseline-only) — see `inventory/hosts.ini`.
+
+To add a new role later (e.g. `monitoring_nodes`), add a new play at the bottom of `site.yml` gated on a new group and a matching `group_vars/monitoring_nodes.yml`, the same way `k3s_nodes` / `docker_nodes` are done. No forking of the whole playbook required.
 
 ---
 
 ## Features
 
 - 🔄 **System update** – `apt update` + dist-upgrade on every run
-- 📦 **Package installation** – installs a curated set of packages defined in `group_vars/all.yml` (htop, btop, curl, git, zsh, iperf3, open-iscsi, cifs-utils, and more)
-- 💾 **Disable swap** – `swapoff -a` + removes swap entries from `/etc/fstab` + masks systemd swap units (required for K3S)
-- ☸️ **K3S installation** – downloads and runs the official K3S install script; version and extra flags configurable via variables
+- 📦 **Package installation** – curated package set from `group_vars/all.yml`
+- 💾 **Disable swap** – required for K3S, applied to every node regardless of role
+- ☸️ **K3S** (`k3s_nodes` group) – downloads and runs the official K3S install script; version and extra flags configurable via `group_vars/k3s_nodes.yml`
+- 🐳 **Docker** (`docker_nodes` group) – adds Docker's official apt repo + GPG key, installs `docker-ce`, `docker-ce-cli`, `containerd.io`, `docker-buildx-plugin`, `docker-compose-plugin`, and adds the admin user to the `docker` group
 - 🕐 **Timezone** – sets the system clock to `Asia/Tokyo`
 - 🌐 **DNS & Domain** – configures `systemd-resolved` with custom DNS servers and search domain `salvetti.info`
 - 🔌 **UPS udev rule** – creates `/etc/udev/rules.d/99-ups.rules` for the APC UPS USB device
 - 🔇 **Disable sysstat** – stops and masks the sysstat service
 - 👤 **User management** – deletes all regular non-root users, creates user `lorenzo` with passwordless sudo
 - 🔑 **SSH key import** – imports SSH public keys from GitHub account `masterlog80` for user `lorenzo`
-- 🔒 **Root hardening** – locks the root password and sets `PermitRootLogin no` in `sshd_config`
-- 🖥️ **Oh My Zsh** – installs Oh My Zsh, Powerlevel10k theme, and plugins `zsh-syntax-highlighting`, `zsh-autosuggestions`, `colorize`, `last-working-dir`, `git`
+- 🔒 **Root hardening** – sets `PermitRootLogin no` in `sshd_config`
+- 🖥️ **Oh My Zsh** – installs Oh My Zsh, Powerlevel10k theme, `zsh-syntax-highlighting`, `zsh-autosuggestions`
 - 🔐 **Getty autologin** – configures automatic login as `lorenzo` on the local console
 - 🌐 **Static IP** – deploys a per-host Netplan configuration (defined in `host_vars/`)
 - 🏷️ **Hostname** – sets the system hostname per host
@@ -47,14 +64,23 @@ git clone https://github.com/masterlog80/ansible-copilot.git
 cd ansible-copilot
 ```
 
-Edit `inventory/hosts.ini` to point at your nodes:
+Edit `inventory/hosts.ini` — add the host under `[nodes]`, then add it under whichever role group(s) match what it should run:
 
 ```ini
 [nodes]
 node1  ansible_host=192.168.10.10  ansible_user=ubuntu
 node2  ansible_host=192.168.10.11  ansible_user=ubuntu
 node3  ansible_host=192.168.10.12  ansible_user=ubuntu
+
+[k3s_nodes]
+node1
+node2
+
+[docker_nodes]
+node3
 ```
+
+Also add a `host_vars/<name>.yml` for the new host (see `host_vars/node1.yml` for the shape) so it has a static IP/hostname.
 
 Run a dry-run first:
 
@@ -62,7 +88,7 @@ Run a dry-run first:
 ansible-playbook site.yml --check --diff
 ```
 
-Apply:
+Apply everything (baseline + whichever roles each host belongs to):
 
 ```bash
 ansible-playbook site.yml
@@ -72,6 +98,12 @@ Target a single host:
 
 ```bash
 ansible-playbook site.yml --limit node1
+```
+
+Target just a role (e.g. re-run Docker install across all Docker-role hosts only):
+
+```bash
+ansible-playbook site.yml --tags docker
 ```
 
 ### Uninstall / rollback
@@ -84,19 +116,21 @@ The playbook is not destructive by default, but to undo specific tasks you can r
 
 ```
 .
-├── site.yml                   # Main playbook — run this
+├── site.yml                   # Main playbook — run this (3 plays: baseline, k3s, docker)
 ├── inventory/
-│   └── hosts.ini              # Managed hosts + connection settings
+│   └── hosts.ini              # Managed hosts + role groups (k3s_nodes / docker_nodes)
 ├── group_vars/
-│   └── all.yml                # Variables shared by every host
+│   ├── all.yml                # Variables shared by every host
+│   ├── k3s_nodes.yml          # K3S version/flags — applies only to [k3s_nodes]
+│   └── docker_nodes.yml       # Docker packages/channel — applies only to [docker_nodes]
 ├── host_vars/
-│   ├── node1.yml              # Per-host network config for node1
-│   ├── node2.yml              # Per-host network config for node2
-│   └── node3.yml              # Per-host network config for node3
+│   ├── node1.yml               # Per-host network config for node1
+│   ├── node2.yml               # Per-host network config for node2
+│   └── node3.yml               # Per-host network config for node3
 └── templates/
     ├── netplan.yml.j2          # Netplan static-IP template
     ├── resolved.conf.j2        # systemd-resolved DNS template
-    └── zshrc.j2               # .zshrc template (Oh My Zsh + Powerlevel10k)
+    └── zshrc.j2                # .zshrc template (Oh My Zsh + Powerlevel10k)
 ```
 
 ---
@@ -113,10 +147,23 @@ The playbook is not destructive by default, but to undo specific tasks you can r
 | `dns_search_domain` | `salvetti.info` | DNS search domain |
 | `admin_user` | `lorenzo` | Name of the admin user to create |
 | `admin_github_user` | `masterlog80` | GitHub username from which SSH public keys are imported |
-| `k3s_version` | `""` (latest) | K3S version to install (e.g. `v1.29.3+k3s1`) |
-| `k3s_install_flags` | `""` | Extra flags for the K3S installer (e.g. `--disable traefik`) |
 | `subnet_prefix` | `24` | Subnet prefix length for static IP |
 | `gateway` | `192.168.10.1` | Default gateway |
+
+### `group_vars/k3s_nodes.yml` — K3S-role variables
+
+| Variable | Default | Description |
+|----------|---------|-------------|
+| `k3s_version` | `""` (latest) | K3S version to install (e.g. `v1.29.3+k3s1`) |
+| `k3s_install_flags` | `""` | Extra flags for the K3S installer (e.g. `--disable traefik`) |
+
+### `group_vars/docker_nodes.yml` — Docker-role variables
+
+| Variable | Default | Description |
+|----------|---------|-------------|
+| `docker_channel` | `stable` | Docker apt repo channel (`stable`, `test`, `nightly`) |
+| `docker_packages` | see file | Docker packages installed from the official apt repo |
+| `docker_group_members` | `["{{ admin_user }}"]` | Users added to the `docker` group |
 
 ### `host_vars/<node>.yml` — per-host network config
 
@@ -134,26 +181,49 @@ subnet_prefix: 24
 
 Run only specific parts of the playbook with `--tags`:
 
-| Tag | Task |
-|-----|------|
-| `update` | System update + dist-upgrade |
-| `packages` | Package installation |
-| `swap` | Disable swap |
-| `k3s` | K3S installation |
-| `timezone` | Set timezone |
-| `dns` | Configure systemd-resolved |
-| `users` | User management |
-| `ssh` | SSH hardening |
-| `zsh` | Oh My Zsh + Powerlevel10k |
-| `autologin` | Getty autologin |
-| `network` | Static IP via Netplan |
-| `hostname` | Set hostname |
+| Tag | Scope | Task(s) |
+|-----|-------|---------|
+| `baseline` | all hosts | Everything in the common bootstrap play |
+| `update` | all hosts | System update + dist-upgrade |
+| `packages` | all hosts | Package installation |
+| `swap` | all hosts | Disable swap |
+| `timezone` | all hosts | Set timezone |
+| `ntp` | all hosts | Configure Chrony / systemd-timesyncd |
+| `dns` | all hosts | Configure systemd-resolved |
+| `ups` | all hosts | UPS udev rule |
+| `sysstat` | all hosts | Disable sysstat |
+| `users` | all hosts | User management |
+| `ssh` | all hosts | SSH hardening |
+| `zsh` | all hosts | Oh My Zsh + Powerlevel10k |
+| `autologin` | all hosts | Getty autologin |
+| `network` | all hosts | Static IP via Netplan |
+| `hostname` | all hosts | Set hostname |
+| `k3s` | `k3s_nodes` only | K3S installation |
+| `docker` | `docker_nodes` only | Docker installation |
 
 Example — only apply networking and hostname:
 
 ```bash
 ansible-playbook site.yml --tags network,hostname
 ```
+
+Example — (re)install Docker on Docker-role hosts only, without touching the baseline:
+
+```bash
+ansible-playbook site.yml --tags docker
+```
+
+---
+
+## Running from Semaphore UI
+
+If you're driving this playbook from a UI (e.g. [ansible-docker](https://github.com/masterlog80/ansible-docker)'s Semaphore UI stack) rather than the CLI, the role groups map directly onto task templates:
+
+- One template running `site.yml` with no `--tags` / `--limit` set → applies baseline + whichever role each host in the inventory belongs to.
+- A second template with `--tags k3s` (or a Survey Variable for the tag) → touches only `k3s_nodes`.
+- A third with `--tags docker` → touches only `docker_nodes`.
+
+Target IP/host selection then comes from which inventory (or `--limit`/survey variable) each template is pointed at, rather than from separate playbooks.
 
 ---
 

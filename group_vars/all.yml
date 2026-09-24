@@ -77,12 +77,12 @@ admin_user: lorenzo
 admin_github_user: masterlog80
 
 # ---------------------------------------------------------------------------
-# K3S
+# Node role
 # ---------------------------------------------------------------------------
-# Set to a specific version (e.g. "v1.29.3+k3s1") or leave empty for latest.
-k3s_version: ""
-# Extra flags passed to the K3S installer (e.g. "--disable traefik").
-k3s_install_flags: ""
+# Purely informational (also derivable from group membership) — surfaced so
+# templates/tasks can reference "{{ node_role }}" if useful. Set per-group
+# in group_vars/k3s_nodes.yml / group_vars/docker_nodes.yml.
+node_role: baseline
 
 # ---------------------------------------------------------------------------
 # Network (defaults – override per host in host_vars/)
