@@ -1,0 +1,21 @@
+---
+# =============================================================================
+# Variables for hosts in [docker_nodes]
+# =============================================================================
+node_role: docker
+
+# Docker apt repo channel (stable | test | nightly).
+docker_channel: stable
+
+# Packages installed from Docker's official apt repo.
+docker_packages:
+  - docker-ce
+  - docker-ce-cli
+  - containerd.io
+  - docker-buildx-plugin
+  - docker-compose-plugin
+
+# Users to add to the "docker" group (so sudo isn't required for docker
+# commands). Admin user is added by default; extend as needed.
+docker_group_members:
+  - "{{ admin_user }}"

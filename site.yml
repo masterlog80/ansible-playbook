@@ -2,25 +2,35 @@
 # =============================================================================
 # site.yml – System bootstrap playbook
 # =============================================================================
-# Covers:
-#   1.  System update & dist-upgrade
-#   2.  Package installation
-#   3.  Disable swap
-#   4.  K3S installation
-#   5.  Timezone (Asia/Tokyo)
-#   6.  NTP (Chrony or systemd-timesyncd)
-#   7.  DNS / Domain (systemd-resolved)
-#   8.  UPS udev rule
-#   9.  Disable sysstat
-#   10. User management (delete non-root, create lorenzo + sudoers + GitHub key)
-#   11. Disable root SSH login (preserve root password)
-#   12. ZSH – Oh My Zsh, Powerlevel10k, plugins
-#   13. Getty autologin for lorenzo
-#   14. Static IP via Netplan
-#   15. Hostname
+# Structure: ONE playbook, THREE plays.
+#
+#   1. "System bootstrap (common baseline)" — hosts: all
+#      Runs on every managed node regardless of role: updates, packages,
+#      swap, timezone, NTP, DNS, UPS udev rule, sysstat, users, SSH
+#      hardening, zsh, autologin, static IP, hostname.
+#
+#   2. "K3S role" — hosts: k3s_nodes
+#      Only runs on hosts in the [k3s_nodes] inventory group.
+#
+#   3. "Docker role" — hosts: docker_nodes
+#      Only runs on hosts in the [docker_nodes] inventory group.
+#
+# A host's ROLE (what gets installed beyond the common baseline) is decided
+# entirely by inventory group membership (inventory/hosts.ini) — not by
+# writing a separate playbook per device. To add a new role (e.g. "monitoring"),
+# add a new play here gated on a new group, the same way k3s/docker are done.
+#
+# Run everything:            ansible-playbook site.yml
+# Only the baseline:         ansible-playbook site.yml --tags baseline
+# Only K3S nodes:             ansible-playbook site.yml --tags k3s
+# Only Docker nodes:          ansible-playbook site.yml --tags docker
+# Just one host:               ansible-playbook site.yml --limit node1
 # =============================================================================
 
-- name: System bootstrap
+# =============================================================================
+# PLAY 1 — Common baseline (all hosts)
+# =============================================================================
+- name: System bootstrap (common baseline)
   hosts: all
   become: true
 
@@ -57,20 +67,22 @@
       ansible.builtin.command: udevadm control --reload-rules
       changed_when: true
 
-  # ---------------------------------------------------------------------------
-  # 1. System Update
-  # ---------------------------------------------------------------------------
   tasks:
+    # -------------------------------------------------------------------------
+    # 1. System Update
+    # -------------------------------------------------------------------------
     - name: Update apt cache
       ansible.builtin.apt:
         update_cache: true
         cache_valid_time: 3600
+      tags: [baseline, update]
 
     - name: Dist-upgrade all packages
       ansible.builtin.apt:
         upgrade: dist
         autoremove: true
         autoclean: true
+      tags: [baseline, update]
 
     # -------------------------------------------------------------------------
     # 2. Package Installation
@@ -79,6 +91,7 @@
       ansible.builtin.apt:
         name: "{{ packages }}"
         state: present
+      tags: [baseline, packages]
 
     # -------------------------------------------------------------------------
     # 3. Disable swap
@@ -87,12 +100,14 @@
       ansible.builtin.command: swapoff -a
       register: swapoff_result
       changed_when: swapoff_result.rc == 0
+      tags: [baseline, swap]
 
     - name: Remove swap entries from /etc/fstab
       ansible.builtin.replace:
         path: /etc/fstab
         regexp: '^([^#\n].*?\sswap\s+\S+\s+.*)$'
         replace: '# \1'
+      tags: [baseline, swap]
 
     - name: Disable systemd swap units
       ansible.builtin.shell: |
@@ -103,43 +118,25 @@
         fi
       register: swap_units_result
       changed_when: "'changed' in swap_units_result.stdout"
+      tags: [baseline, swap]
 
     # -------------------------------------------------------------------------
-    # 4. Install K3S
-    # -------------------------------------------------------------------------
-    # Security note: the K3S installer is fetched directly from https://get.k3s.io.
-    # When pinning a specific version via k3s_version, you can additionally verify
-    # the binary checksum from the official release page at:
-    # https://github.com/k3s-io/k3s/releases
-    - name: Download K3S install script
-      ansible.builtin.get_url:
-        url: https://get.k3s.io
-        dest: /tmp/k3s-install.sh
-        mode: "0755"
-
-    - name: Run K3S install script
-      ansible.builtin.shell: /tmp/k3s-install.sh
-      environment:
-        INSTALL_K3S_VERSION: "{{ k3s_version }}"
-        INSTALL_K3S_EXEC: "{{ k3s_install_flags }}"
-      args:
-        creates: /usr/local/bin/k3s
-
-    # -------------------------------------------------------------------------
-    # 5. Timezone
+    # 4. Timezone
     # -------------------------------------------------------------------------
     - name: Set timezone to {{ timezone }}
       community.general.timezone:
         name: "{{ timezone }}"
+      tags: [baseline, timezone]
 
     # -------------------------------------------------------------------------
-    # 6. NTP
+    # 5. NTP
     # -------------------------------------------------------------------------
     # Detect the NTP implementation before installing/configuring either one.
     # With ntp_client=auto, an already-active implementation is preserved.
     # If neither is active, Chrony is selected as the default.
     - name: Gather service facts for NTP detection
       ansible.builtin.service_facts:
+      tags: [baseline, ntp]
 
     - name: Select NTP client automatically
       ansible.builtin.set_fact:
@@ -148,29 +145,34 @@
              else 'systemd-timesyncd' if ansible_facts.services.get('systemd-timesyncd.service', {}).get('state') == 'running'
              else 'chrony' }}
       when: ntp_client == 'auto'
+      tags: [baseline, ntp]
 
     - name: Select configured NTP client
       ansible.builtin.set_fact:
         selected_ntp_client: "{{ ntp_client }}"
       when: ntp_client != 'auto'
+      tags: [baseline, ntp]
 
     - name: Validate selected NTP client
       ansible.builtin.assert:
         that:
           - selected_ntp_client in ['chrony', 'systemd-timesyncd']
         fail_msg: "ntp_client must be 'auto', 'chrony', or 'systemd-timesyncd'."
+      tags: [baseline, ntp]
 
     - name: Install Chrony when selected
       ansible.builtin.apt:
         name: chrony
         state: present
       when: selected_ntp_client == 'chrony'
+      tags: [baseline, ntp]
 
     - name: Install systemd-timesyncd when selected
       ansible.builtin.apt:
         name: systemd-timesyncd
         state: present
       when: selected_ntp_client == 'systemd-timesyncd'
+      tags: [baseline, ntp]
 
     - name: Deploy Chrony configuration
       ansible.builtin.template:
@@ -181,6 +183,7 @@
         mode: "0644"
       notify: Restart chrony
       when: selected_ntp_client == 'chrony'
+      tags: [baseline, ntp]
 
     - name: Ensure Chrony is running and enabled
       ansible.builtin.service:
@@ -188,6 +191,7 @@
         state: started
         enabled: true
       when: selected_ntp_client == 'chrony'
+      tags: [baseline, ntp]
 
     - name: Deploy systemd-timesyncd configuration
       ansible.builtin.template:
@@ -198,6 +202,7 @@
         mode: "0644"
       notify: Restart systemd-timesyncd
       when: selected_ntp_client == 'systemd-timesyncd'
+      tags: [baseline, ntp]
 
     - name: Ensure systemd-timesyncd is running and enabled
       ansible.builtin.service:
@@ -205,6 +210,7 @@
         state: started
         enabled: true
       when: selected_ntp_client == 'systemd-timesyncd'
+      tags: [baseline, ntp]
 
     - name: Disable systemd-timesyncd when Chrony is selected
       ansible.builtin.service:
@@ -214,6 +220,7 @@
       when:
         - selected_ntp_client == 'chrony'
         - ansible_facts.services.get('systemd-timesyncd.service', {}).get('state') in ['running', 'stopped']
+      tags: [baseline, ntp]
 
     - name: Disable Chrony when systemd-timesyncd is selected
       ansible.builtin.service:
@@ -223,9 +230,10 @@
       when:
         - selected_ntp_client == 'systemd-timesyncd'
         - ansible_facts.services.get('chrony.service', {}).get('state') in ['running', 'stopped']
+      tags: [baseline, ntp]
 
     # -------------------------------------------------------------------------
-    # 7. DNS & Domain via systemd-resolved
+    # 6. DNS & Domain via systemd-resolved
     # -------------------------------------------------------------------------
     - name: Deploy systemd-resolved configuration
       ansible.builtin.template:
@@ -235,15 +243,17 @@
         group: root
         mode: "0644"
       notify: Restart systemd-resolved
+      tags: [baseline, dns]
 
     - name: Ensure systemd-resolved is running and enabled
       ansible.builtin.service:
         name: systemd-resolved
         state: started
         enabled: true
+      tags: [baseline, dns]
 
     # -------------------------------------------------------------------------
-    # 8. UPS udev rule
+    # 7. UPS udev rule
     # -------------------------------------------------------------------------
     - name: Deploy UPS udev rule
       ansible.builtin.copy:
@@ -254,9 +264,10 @@
         group: root
         mode: "0644"
       notify: Reload udev
+      tags: [baseline, ups]
 
     # -------------------------------------------------------------------------
-    # 9. Disable sysstat
+    # 8. Disable sysstat
     # -------------------------------------------------------------------------
     - name: Stop and disable sysstat service
       ansible.builtin.service:
@@ -264,9 +275,10 @@
         state: stopped
         enabled: false
       ignore_errors: true   # service may not be present on all systems
+      tags: [baseline, sysstat]
 
     # -------------------------------------------------------------------------
-    # 10. User management
+    # 9. User management
     # -------------------------------------------------------------------------
 
     # Create the admin user first so that there is always an active admin
@@ -277,6 +289,7 @@
         shell: /bin/zsh
         create_home: true
         state: present
+      tags: [baseline, users]
 
     - name: Grant {{ admin_user }} passwordless sudo
       ansible.builtin.copy:
@@ -286,12 +299,14 @@
         group: root
         mode: "0440"
         validate: visudo -cf %s
+      tags: [baseline, users]
 
     - name: Add SSH public key from GitHub for {{ admin_user }}
       ansible.posix.authorized_key:
         user: "{{ admin_user }}"
         key: "https://github.com/{{ admin_github_user }}.keys"
         state: present
+      tags: [baseline, users]
 
     # Collect users to delete AFTER the admin user is ready.
     - name: Gather list of non-root / non-admin regular users
@@ -300,6 +315,7 @@
           '$3 >= 1000 && $1 != "nobody" && $1 != admin {print $1}'
       register: users_to_delete
       changed_when: false
+      tags: [baseline, users]
 
     - name: Gracefully stop processes for users that will be deleted
       ansible.builtin.shell: |
@@ -307,11 +323,13 @@
       loop: "{{ users_to_delete.stdout_lines }}"
       when: users_to_delete.stdout_lines | length > 0
       ignore_errors: true
+      tags: [baseline, users]
 
     - name: Wait briefly for processes to exit
       ansible.builtin.pause:
         seconds: 3
       when: users_to_delete.stdout_lines | length > 0
+      tags: [baseline, users]
 
     - name: Force-kill remaining processes for users that will be deleted
       ansible.builtin.shell: |
@@ -319,6 +337,7 @@
       loop: "{{ users_to_delete.stdout_lines }}"
       when: users_to_delete.stdout_lines | length > 0
       ignore_errors: true
+      tags: [baseline, users]
 
     - name: Remove non-admin regular users and their home directories
       ansible.builtin.user:
@@ -328,9 +347,10 @@
         force: true
       loop: "{{ users_to_delete.stdout_lines }}"
       when: users_to_delete.stdout_lines | length > 0
+      tags: [baseline, users]
 
     # -------------------------------------------------------------------------
-    # 11. Disable root SSH login while preserving the root password
+    # 10. Disable root SSH login while preserving the root password
     # -------------------------------------------------------------------------
     - name: Disable root SSH login
       ansible.builtin.lineinfile:
@@ -339,14 +359,16 @@
         line: "PermitRootLogin no"
         state: present
       notify: Restart sshd
+      tags: [baseline, ssh]
 
     # -------------------------------------------------------------------------
-    # 12. ZSH – Oh My Zsh, Powerlevel10k, plugins
+    # 11. ZSH – Oh My Zsh, Powerlevel10k, plugins
     # -------------------------------------------------------------------------
     - name: Check if Oh My Zsh is already installed for {{ admin_user }}
       ansible.builtin.stat:
         path: "/home/{{ admin_user }}/.oh-my-zsh"
       register: omzsh_stat
+      tags: [baseline, zsh]
 
     - name: Install Oh My Zsh for {{ admin_user }}
       # Security note: the installer is fetched from the official ohmyzsh repo.
@@ -361,6 +383,7 @@
       args:
         creates: "/home/{{ admin_user }}/.oh-my-zsh"
       when: not omzsh_stat.stat.exists
+      tags: [baseline, zsh]
 
     - name: Clone Powerlevel10k theme
       ansible.builtin.git:
@@ -369,6 +392,7 @@
         depth: 1
         update: false
       become_user: "{{ admin_user }}"
+      tags: [baseline, zsh]
 
     - name: Clone zsh-syntax-highlighting plugin
       ansible.builtin.git:
@@ -377,6 +401,7 @@
         depth: 1
         update: false
       become_user: "{{ admin_user }}"
+      tags: [baseline, zsh]
 
     - name: Clone zsh-autosuggestions plugin
       ansible.builtin.git:
@@ -385,6 +410,7 @@
         depth: 1
         update: false
       become_user: "{{ admin_user }}"
+      tags: [baseline, zsh]
 
     - name: Deploy .zshrc for {{ admin_user }}
       ansible.builtin.template:
@@ -393,15 +419,11 @@
         owner: "{{ admin_user }}"
         group: "{{ admin_user }}"
         mode: "0644"
+      tags: [baseline, zsh]
 
     # -------------------------------------------------------------------------
-    # 13. Getty autologin for {{ admin_user }}
+    # 12. Getty autologin for {{ admin_user }}
     # -------------------------------------------------------------------------
-    # NOTE: The problem statement specifies /lib/systemd/system/ (the vendor
-    # unit directory). For purely local customisations the canonical path is
-    # /etc/systemd/system/getty@.service.d/override.conf, which takes
-    # precedence over /lib. Both locations are created here so that the
-    # autologin setting is in effect regardless of which path the runtime uses.
     - name: Ensure getty override directory exists (/lib)
       ansible.builtin.file:
         path: /lib/systemd/system/getty@.service.d
@@ -409,6 +431,7 @@
         owner: root
         group: root
         mode: "0755"
+      tags: [baseline, autologin]
 
     - name: Ensure getty override directory exists (/etc)
       ansible.builtin.file:
@@ -417,6 +440,7 @@
         owner: root
         group: root
         mode: "0755"
+      tags: [baseline, autologin]
 
     - name: Configure getty autologin for {{ admin_user }} (/lib)
       ansible.builtin.copy:
@@ -429,6 +453,7 @@
         group: root
         mode: "0644"
       notify: Reload systemd
+      tags: [baseline, autologin]
 
     - name: Configure getty autologin for {{ admin_user }} (/etc – canonical)
       ansible.builtin.copy:
@@ -441,9 +466,10 @@
         group: root
         mode: "0644"
       notify: Reload systemd
+      tags: [baseline, autologin]
 
     # -------------------------------------------------------------------------
-    # 14. Static IP via Netplan
+    # 13. Static IP via Netplan
     # -------------------------------------------------------------------------
     - name: Deploy Netplan static-IP configuration
       ansible.builtin.template:
@@ -453,13 +479,15 @@
         group: root
         mode: "0600"
       notify: Apply netplan
+      tags: [baseline, network]
 
     # -------------------------------------------------------------------------
-    # 15. Hostname
+    # 14. Hostname
     # -------------------------------------------------------------------------
     - name: Set hostname to {{ hostname }}
       ansible.builtin.hostname:
         name: "{{ hostname }}"
+      tags: [baseline, hostname]
 
     - name: Ensure hostname is in /etc/hosts
       ansible.builtin.lineinfile:
@@ -467,3 +495,106 @@
         regexp: '^127\.0\.1\.1\s+'
         line: "127.0.1.1 {{ hostname }}"
         state: present
+      tags: [baseline, hostname]
+
+# =============================================================================
+# PLAY 2 — K3S role (hosts in [k3s_nodes])
+# =============================================================================
+- name: K3S role
+  hosts: k3s_nodes
+  become: true
+  tags: [k3s]
+
+  tasks:
+    # Security note: the K3S installer is fetched directly from
+    # https://get.k3s.io. When pinning a specific version via k3s_version,
+    # you can additionally verify the binary checksum from the official
+    # release page at https://github.com/k3s-io/k3s/releases
+    - name: Download K3S install script
+      ansible.builtin.get_url:
+        url: https://get.k3s.io
+        dest: /tmp/k3s-install.sh
+        mode: "0755"
+      tags: [k3s]
+
+    - name: Run K3S install script
+      ansible.builtin.shell: /tmp/k3s-install.sh
+      environment:
+        INSTALL_K3S_VERSION: "{{ k3s_version }}"
+        INSTALL_K3S_EXEC: "{{ k3s_install_flags }}"
+      args:
+        creates: /usr/local/bin/k3s
+      tags: [k3s]
+
+# =============================================================================
+# PLAY 3 — Docker role (hosts in [docker_nodes])
+# =============================================================================
+- name: Docker role
+  hosts: docker_nodes
+  become: true
+  tags: [docker]
+
+  tasks:
+    - name: Install Docker prerequisite packages
+      ansible.builtin.apt:
+        name:
+          - ca-certificates
+          - curl
+        state: present
+      tags: [docker]
+
+    - name: Ensure /etc/apt/keyrings exists
+      ansible.builtin.file:
+        path: /etc/apt/keyrings
+        state: directory
+        owner: root
+        group: root
+        mode: "0755"
+      tags: [docker]
+
+    # Security note: Docker's official GPG key, fetched over HTTPS from
+    # download.docker.com and used to verify the apt repo below.
+    - name: Download Docker's official GPG key
+      ansible.builtin.get_url:
+        url: https://download.docker.com/linux/ubuntu/gpg
+        dest: /etc/apt/keyrings/docker.asc
+        mode: "0644"
+      tags: [docker]
+
+    - name: Determine dpkg architecture
+      ansible.builtin.command: dpkg --print-architecture
+      register: dpkg_arch
+      changed_when: false
+      tags: [docker]
+
+    - name: Add Docker apt repository
+      ansible.builtin.apt_repository:
+        repo: >-
+          deb [arch={{ dpkg_arch.stdout }} signed-by=/etc/apt/keyrings/docker.asc]
+          https://download.docker.com/linux/ubuntu
+          {{ ansible_distribution_release }} {{ docker_channel }}
+        filename: docker
+        state: present
+      tags: [docker]
+
+    - name: Install Docker Engine + Compose plugin
+      ansible.builtin.apt:
+        name: "{{ docker_packages }}"
+        state: present
+        update_cache: true
+      tags: [docker]
+
+    - name: Ensure Docker service is running and enabled
+      ansible.builtin.service:
+        name: docker
+        state: started
+        enabled: true
+      tags: [docker]
+
+    - name: Add users to the docker group
+      ansible.builtin.user:
+        name: "{{ item }}"
+        groups: docker
+        append: true
+      loop: "{{ docker_group_members }}"
+      tags: [docker]
