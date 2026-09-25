@@ -1,4 +1,4 @@
-# ansible-copilot
+# ansible-playbook
 
 An Ansible playbook for bootstrapping a fleet of Linux nodes (Debian/Ubuntu-based) from a fresh OS image to a fully configured, role-specific state. Covers system updates, package installation, hardening, user management, networking, shell environment setup — plus a per-node choice of **K3S** or **Docker** (or both, or neither) driven entirely by inventory group membership.
 
@@ -60,8 +60,8 @@ ansible-galaxy collection install community.general ansible.posix
 ### Clone & run
 
 ```bash
-git clone https://github.com/masterlog80/ansible-copilot.git
-cd ansible-copilot
+git clone https://github.com/masterlog80/ansible-playbook.git
+cd ansible-playbook
 ```
 
 Edit `inventory/hosts.ini` — add the host under `[nodes]`, then add it under whichever role group(s) match what it should run:
