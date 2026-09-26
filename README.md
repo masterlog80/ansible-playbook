@@ -39,7 +39,7 @@ To add a new role later (e.g. `monitoring_nodes`), add a new play at the bottom 
 - 👤 **User management** – deletes all regular non-root users, creates user `lorenzo` with passwordless sudo
 - 🔑 **SSH key import** – imports SSH public keys from GitHub account `masterlog80` for user `lorenzo`
 - 🔒 **Root hardening** – sets `PermitRootLogin no` in `sshd_config`
-- 🖥️ **Oh My Zsh** – installs Oh My Zsh, Powerlevel10k theme, `zsh-syntax-highlighting`, `zsh-autosuggestions`
+- 🖥️ **Oh My Zsh** – installs Oh My Zsh + Powerlevel10k theme for **every user in `zsh_users`** (default: the admin user and `root`), with the plugin set: `kubectl`, `kubectx`, `kube-ps1`, `git`, `zsh-syntax-highlighting`, `zsh-autosuggestions`, `docker`, `docker-compose`, `colorize`, `last-working-dir`. `zsh-syntax-highlighting` and `zsh-autosuggestions` are cloned from their upstream repos (not bundled with Oh My Zsh); the rest ship with Oh My Zsh itself
 - 🔐 **Getty autologin** – configures automatic login as `lorenzo` on the local console
 - 🌐 **Static IP** – deploys a per-host Netplan configuration (defined in `host_vars/`)
 - 🏷️ **Hostname** – sets the system hostname per host
@@ -155,6 +155,9 @@ The playbook is not destructive by default, but to undo specific tasks you can r
 | `dns_search_domain` | `salvetti.info` | DNS search domain |
 | `admin_user` | `lorenzo` | Name of the admin user to create |
 | `admin_github_user` | `masterlog80` | GitHub username from which SSH public keys are imported |
+| `zsh_users` | `{{ admin_user }}` + `root` (name + home dir pairs) | Users who get zsh/Oh My Zsh/Powerlevel10k/plugins. Add an entry (`name`, `home`) to extend it to another user |
+| `zsh_plugins` | see file — `kubectl`, `kubectx`, `kube-ps1`, `git`, `zsh-syntax-highlighting`, `zsh-autosuggestions`, `docker`, `docker-compose`, `colorize`, `last-working-dir` | Oh My Zsh plugins enabled in every `zsh_users` member's `.zshrc` |
+| `zsh_external_plugins` | `zsh-syntax-highlighting`, `zsh-autosuggestions` (name + repo pairs) | Plugins not bundled with Oh My Zsh, cloned from their upstream repo instead |
 | `subnet_prefix` | `24` | Subnet prefix length for static IP |
 | `gateway` | `192.168.10.1` | Default gateway |
 
@@ -210,7 +213,7 @@ Run only specific parts of the playbook with `--tags`:
 | `sysstat` | all hosts | Disable sysstat |
 | `users` | all hosts | User management |
 | `ssh` | all hosts | SSH hardening |
-| `zsh` | all hosts | Oh My Zsh + Powerlevel10k |
+| `zsh` | all hosts | Oh My Zsh + Powerlevel10k + plugins, for every user in `zsh_users` |
 | `autologin` | all hosts | Getty autologin |
 | `network` | all hosts | Static IP via Netplan |
 | `hostname` | all hosts | Set hostname |
