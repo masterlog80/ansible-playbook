@@ -6,7 +6,8 @@
 #
 #   1. "System bootstrap (common baseline)" — hosts: all
 #      Runs on every managed node regardless of role: updates, packages,
-#      swap, timezone, NTP, DNS, UPS udev rule, sysstat, users, SSH
+#      swap, timezone, NTP, DNS, udev rules (GSM modem, UPS OMRON, UPS APC),
+#      sysstat, users, SSH
 #      hardening, zsh, autologin, static IP, hostname.
 #
 #   2. "K3S role" — hosts: k3s_nodes
@@ -63,8 +64,12 @@
       ansible.builtin.command: netplan apply
       changed_when: true
 
-    - name: Reload udev
+    - name: Reload udev rules
       ansible.builtin.command: udevadm control --reload-rules
+      changed_when: true
+
+    - name: Trigger udev
+      ansible.builtin.command: udevadm trigger
       changed_when: true
 
   tasks:
@@ -253,9 +258,35 @@
       tags: [baseline, dns]
 
     # -------------------------------------------------------------------------
-    # 7. UPS udev rule
+    # 7. udev rules (GSM modem, UPS OMRON, UPS APC)
     # -------------------------------------------------------------------------
-    - name: Deploy UPS udev rule
+    - name: Deploy GSM modem udev rule (Qualcomm)
+      ansible.builtin.copy:
+        dest: /etc/udev/rules.d/90-qualcomm.rules
+        content: |
+          SUBSYSTEM=="usb", ATTR{idVendor}=="05c6", ATTR{idProduct}=="1000", RUN+="/usr/sbin/usb_modeswitch -W -v 05c6 -p 1000 -K"
+        owner: root
+        group: root
+        mode: "0644"
+      notify:
+        - Reload udev rules
+        - Trigger udev
+      tags: [baseline, udev, modem]
+
+    - name: Deploy UPS OMRON udev rule
+      ansible.builtin.copy:
+        dest: /etc/udev/rules.d/90-omron-ups.conf
+        content: |
+          SUBSYSTEM=="usb", ENV{DEVTYPE}=="usb_device", ATTRS{idVendor}=="0590", ATTRS{idProduct}=="0081", MODE="0664", GROUP="nut", SYMLINK+="ups"
+        owner: root
+        group: root
+        mode: "0644"
+      notify:
+        - Reload udev rules
+        - Trigger udev
+      tags: [baseline, udev, ups]
+
+    - name: Deploy UPS APC udev rule
       ansible.builtin.copy:
         dest: /etc/udev/rules.d/99-ups.rules
         content: |
@@ -263,8 +294,10 @@
         owner: root
         group: root
         mode: "0644"
-      notify: Reload udev
-      tags: [baseline, ups]
+      notify:
+        - Reload udev rules
+        - Trigger udev
+      tags: [baseline, udev, ups]
 
     # -------------------------------------------------------------------------
     # 8. Disable sysstat
