@@ -77,6 +77,43 @@ admin_user: lorenzo
 admin_github_user: masterlog80
 
 # ---------------------------------------------------------------------------
+# Zsh / Oh My Zsh
+# ---------------------------------------------------------------------------
+# Every user in this list gets: shell set to zsh, Oh My Zsh + Powerlevel10k
+# + the plugin set below, deployed identically. Add an entry here (with its
+# home directory) to extend zsh/Oh My Zsh to another user.
+zsh_users:
+  - name: "{{ admin_user }}"
+    home: "/home/{{ admin_user }}"
+  - name: root
+    home: /root
+
+# Oh My Zsh plugins enabled in .zshrc (templates/zshrc.j2). All of these are
+# bundled with Oh My Zsh itself EXCEPT zsh-syntax-highlighting and
+# zsh-autosuggestions, which are cloned separately from their upstream repos
+# (see the "external zsh plugin" tasks in site.yml) because Oh My Zsh does
+# not ship them.
+zsh_plugins:
+  - kubectl
+  - kubectx
+  - kube-ps1
+  - git
+  - zsh-syntax-highlighting
+  - zsh-autosuggestions
+  - docker
+  - docker-compose
+  - colorize
+  - last-working-dir
+
+# External (not bundled with Oh My Zsh) plugins to clone into
+# <home>/.oh-my-zsh/custom/plugins/<name>. Must be a subset of zsh_plugins.
+zsh_external_plugins:
+  - name: zsh-syntax-highlighting
+    repo: https://github.com/zsh-users/zsh-syntax-highlighting.git
+  - name: zsh-autosuggestions
+    repo: https://github.com/zsh-users/zsh-autosuggestions.git
+
+# ---------------------------------------------------------------------------
 # Node role
 # ---------------------------------------------------------------------------
 # Purely informational (also derivable from group membership) — surfaced so

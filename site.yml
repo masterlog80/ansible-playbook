@@ -308,6 +308,12 @@
         state: present
       tags: [baseline, users]
 
+    - name: Set root's shell to zsh
+      ansible.builtin.user:
+        name: root
+        shell: /bin/zsh
+      tags: [baseline, users, zsh]
+
     # Collect users to delete AFTER the admin user is ready.
     - name: Gather list of non-root / non-admin regular users
       ansible.builtin.shell: |
@@ -362,63 +368,71 @@
       tags: [baseline, ssh]
 
     # -------------------------------------------------------------------------
-    # 11. ZSH – Oh My Zsh, Powerlevel10k, plugins
+    # 11. ZSH – Oh My Zsh, Powerlevel10k, plugins (for every user in zsh_users)
     # -------------------------------------------------------------------------
-    - name: Check if Oh My Zsh is already installed for {{ admin_user }}
+    - name: Check if Oh My Zsh is already installed
       ansible.builtin.stat:
-        path: "/home/{{ admin_user }}/.oh-my-zsh"
+        path: "{{ item.home }}/.oh-my-zsh"
       register: omzsh_stat
+      loop: "{{ zsh_users }}"
+      loop_control:
+        label: "{{ item.name }}"
       tags: [baseline, zsh]
 
-    - name: Install Oh My Zsh for {{ admin_user }}
+    - name: Install Oh My Zsh
       # Security note: the installer is fetched from the official ohmyzsh repo.
       # RUNZSH=no and CHSH=no prevent the script from switching the shell
       # interactively; the shell is already set via the user module above.
       ansible.builtin.shell: |
         RUNZSH=no CHSH=no \
         sh -c "$(curl -fsSL https://raw.githubusercontent.com/ohmyzsh/ohmyzsh/master/tools/install.sh)"
-      become_user: "{{ admin_user }}"
+      become_user: "{{ item.item.name }}"
       environment:
-        HOME: "/home/{{ admin_user }}"
+        HOME: "{{ item.item.home }}"
       args:
-        creates: "/home/{{ admin_user }}/.oh-my-zsh"
-      when: not omzsh_stat.stat.exists
+        creates: "{{ item.item.home }}/.oh-my-zsh"
+      loop: "{{ omzsh_stat.results }}"
+      loop_control:
+        label: "{{ item.item.name }}"
+      when: not item.stat.exists
       tags: [baseline, zsh]
 
     - name: Clone Powerlevel10k theme
       ansible.builtin.git:
         repo: https://github.com/romkatv/powerlevel10k.git
-        dest: "/home/{{ admin_user }}/.oh-my-zsh/custom/themes/powerlevel10k"
+        dest: "{{ item.home }}/.oh-my-zsh/custom/themes/powerlevel10k"
         depth: 1
         update: false
-      become_user: "{{ admin_user }}"
+      become_user: "{{ item.name }}"
+      loop: "{{ zsh_users }}"
+      loop_control:
+        label: "{{ item.name }}"
       tags: [baseline, zsh]
 
-    - name: Clone zsh-syntax-highlighting plugin
+    - name: Clone external zsh plugins (zsh-syntax-highlighting, zsh-autosuggestions)
       ansible.builtin.git:
-        repo: https://github.com/zsh-users/zsh-syntax-highlighting.git
-        dest: "/home/{{ admin_user }}/.oh-my-zsh/custom/plugins/zsh-syntax-highlighting"
+        repo: "{{ item.1.repo }}"
+        dest: "{{ item.0.home }}/.oh-my-zsh/custom/plugins/{{ item.1.name }}"
         depth: 1
         update: false
-      become_user: "{{ admin_user }}"
+      become_user: "{{ item.0.name }}"
+      with_nested:
+        - "{{ zsh_users }}"
+        - "{{ zsh_external_plugins }}"
+      loop_control:
+        label: "{{ item.0.name }} / {{ item.1.name }}"
       tags: [baseline, zsh]
 
-    - name: Clone zsh-autosuggestions plugin
-      ansible.builtin.git:
-        repo: https://github.com/zsh-users/zsh-autosuggestions.git
-        dest: "/home/{{ admin_user }}/.oh-my-zsh/custom/plugins/zsh-autosuggestions"
-        depth: 1
-        update: false
-      become_user: "{{ admin_user }}"
-      tags: [baseline, zsh]
-
-    - name: Deploy .zshrc for {{ admin_user }}
+    - name: Deploy .zshrc
       ansible.builtin.template:
         src: templates/zshrc.j2
-        dest: "/home/{{ admin_user }}/.zshrc"
-        owner: "{{ admin_user }}"
-        group: "{{ admin_user }}"
+        dest: "{{ item.home }}/.zshrc"
+        owner: "{{ item.name }}"
+        group: "{{ item.name }}"
         mode: "0644"
+      loop: "{{ zsh_users }}"
+      loop_control:
+        label: "{{ item.name }}"
       tags: [baseline, zsh]
 
     # -------------------------------------------------------------------------
