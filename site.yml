@@ -549,14 +549,9 @@
   tags: [docker]
 
   tasks:
-    - name: Install Docker prerequisite packages
-      ansible.builtin.apt:
-        name:
-          - ca-certificates
-          - curl
-        state: present
-      tags: [docker]
-
+    # ca-certificates and curl are installed for every host via the
+    # baseline "packages" list in group_vars/all.yml — no need to
+    # re-install them here.
     - name: Ensure /etc/apt/keyrings exists
       ansible.builtin.file:
         path: /etc/apt/keyrings
