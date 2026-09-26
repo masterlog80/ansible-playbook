@@ -10,7 +10,7 @@ One playbook (`site.yml`), six plays:
 
 | Play | Runs on | What it does |
 |------|---------|---------------|
-| `System bootstrap (common baseline)` | `hosts: all` | Updates, packages, swap, timezone, NTP, DNS, UPS udev rule, sysstat, users, SSH hardening, zsh, autologin, static IP, hostname — every managed node gets this |
+| `System bootstrap (common baseline)` | `hosts: all` | Updates, packages, swap, timezone, NTP, DNS, udev rules (GSM modem, UPS OMRON, UPS APC), sysstat, users, SSH hardening, zsh, autologin, static IP, hostname — every managed node gets this |
 | `K3S role` | `hosts: k3s_nodes` | Installs K3S — only on hosts in the `[k3s_nodes]` inventory group |
 | `Docker role` | `hosts: docker_nodes` | Installs Docker Engine + Compose plugin — only on hosts in the `[docker_nodes]` inventory group |
 | `role_1` | `hosts: role_1` | Placeholder role — only on hosts in the `[role_1]` inventory group |
@@ -34,7 +34,7 @@ To add a new role later (e.g. `monitoring_nodes`), add a new play at the bottom 
 - 🐳 **Docker** (`docker_nodes` group) – adds Docker's official apt repo + GPG key, installs `docker-ce`, `docker-ce-cli`, `containerd.io`, `docker-buildx-plugin`, `docker-compose-plugin`, and adds the admin user to the `docker` group
 - 🕐 **Timezone** – sets the system clock to `Asia/Tokyo`
 - 🌐 **DNS & Domain** – configures `systemd-resolved` with custom DNS servers and search domain `salvetti.info`
-- 🔌 **UPS udev rule** – creates `/etc/udev/rules.d/99-ups.rules` for the APC UPS USB device
+- 🔌 **udev rules** – `/etc/udev/rules.d/90-qualcomm.rules` (GSM modem, auto-switches a Qualcomm USB stick out of storage mode via `usb_modeswitch`), `/etc/udev/rules.d/90-omron-ups.conf` (OMRON UPS — symlinks to `/dev/ups`, group `nut`), `/etc/udev/rules.d/99-ups.rules` (APC UPS — symlinks to `/dev/ups-network`)
 - 🔇 **Disable sysstat** – stops and masks the sysstat service
 - 👤 **User management** – deletes all regular non-root users, creates user `lorenzo` with passwordless sudo
 - 🔑 **SSH key import** – imports SSH public keys from GitHub account `masterlog80` for user `lorenzo`
@@ -209,7 +209,9 @@ Run only specific parts of the playbook with `--tags`:
 | `timezone` | all hosts | Set timezone |
 | `ntp` | all hosts | Configure Chrony / systemd-timesyncd |
 | `dns` | all hosts | Configure systemd-resolved |
-| `ups` | all hosts | UPS udev rule |
+| `ups` | all hosts | UPS udev rules (OMRON + APC) |
+| `modem` | all hosts | GSM modem udev rule (Qualcomm) |
+| `udev` | all hosts | All three udev rules together (GSM modem + both UPS rules) |
 | `sysstat` | all hosts | Disable sysstat |
 | `users` | all hosts | User management |
 | `ssh` | all hosts | SSH hardening |
