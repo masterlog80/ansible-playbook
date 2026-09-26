@@ -598,3 +598,60 @@
         append: true
       loop: "{{ docker_group_members }}"
       tags: [docker]
+
+# =============================================================================
+# PLAY 4 — role_1 (hosts in [role_1])
+# =============================================================================
+# Placeholder role added to demonstrate/exercise the pattern described in
+# README.md ("Adding a new role"). Replace the placeholder task below with
+# whatever this role should actually do, and rename the group/tag/file trio
+# (inventory group, group_vars/role_1.yml, this play) to something
+# meaningful once its real purpose is known.
+- name: role_1
+  hosts: role_1
+  become: true
+  tags: [role_1]
+
+  tasks:
+    - name: role_1 placeholder task
+      ansible.builtin.debug:
+        msg: "role_1 applied to {{ inventory_hostname }} (node_role={{ node_role }})"
+      tags: [role_1]
+
+# =============================================================================
+# PLAY 5 — role_2 (hosts in [role_2])
+# =============================================================================
+# Placeholder role added to demonstrate/exercise the pattern described in
+# README.md ("Adding a new role"). Replace the placeholder task below with
+# whatever this role should actually do, and rename the group/tag/file trio
+# (inventory group, group_vars/role_2.yml, this play) to something
+# meaningful once its real purpose is known.
+- name: role_2
+  hosts: role_2
+  become: true
+  tags: [role_2]
+
+  tasks:
+    - name: role_2 placeholder task
+      ansible.builtin.debug:
+        msg: "role_2 applied to {{ inventory_hostname }} (node_role={{ node_role }})"
+      tags: [role_2]
+
+# =============================================================================
+# PLAY 6 — role_3 (hosts in [role_3])
+# =============================================================================
+# Placeholder role added to demonstrate/exercise the pattern described in
+# README.md ("Adding a new role"). Replace the placeholder task below with
+# whatever this role should actually do, and rename the group/tag/file trio
+# (inventory group, group_vars/role_3.yml, this play) to something
+# meaningful once its real purpose is known.
+- name: role_3
+  hosts: role_3
+  become: true
+  tags: [role_3]
+
+  tasks:
+    - name: role_3 placeholder task
+      ansible.builtin.debug:
+        msg: "role_3 applied to {{ inventory_hostname }} (node_role={{ node_role }})"
+      tags: [role_3]

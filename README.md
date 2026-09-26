@@ -6,17 +6,22 @@ An Ansible playbook for bootstrapping a fleet of Linux nodes (Debian/Ubuntu-base
 
 ## Design: common baseline + role groups
 
-One playbook (`site.yml`), three plays:
+One playbook (`site.yml`), six plays:
 
 | Play | Runs on | What it does |
 |------|---------|---------------|
 | `System bootstrap (common baseline)` | `hosts: all` | Updates, packages, swap, timezone, NTP, DNS, UPS udev rule, sysstat, users, SSH hardening, zsh, autologin, static IP, hostname — every managed node gets this |
 | `K3S role` | `hosts: k3s_nodes` | Installs K3S — only on hosts in the `[k3s_nodes]` inventory group |
 | `Docker role` | `hosts: docker_nodes` | Installs Docker Engine + Compose plugin — only on hosts in the `[docker_nodes]` inventory group |
+| `role_1` | `hosts: role_1` | Placeholder role — only on hosts in the `[role_1]` inventory group |
+| `role_2` | `hosts: role_2` | Placeholder role — only on hosts in the `[role_2]` inventory group |
+| `role_3` | `hosts: role_3` | Placeholder role — only on hosts in the `[role_3]` inventory group |
 
-**Which device gets what is decided by inventory group membership, not by writing a separate playbook per device.** A host can be in `k3s_nodes`, `docker_nodes`, both, or neither (baseline-only) — see `inventory/hosts.ini`.
+`role_1` / `role_2` / `role_3` are scaffolding — each currently runs a single `debug` task so the pattern is provable end-to-end. Replace the placeholder task in each play with real work (and rename the group/tag/`group_vars` file to something meaningful) once you know what that role should actually do.
 
-To add a new role later (e.g. `monitoring_nodes`), add a new play at the bottom of `site.yml` gated on a new group and a matching `group_vars/monitoring_nodes.yml`, the same way `k3s_nodes` / `docker_nodes` are done. No forking of the whole playbook required.
+**Which device gets what is decided by inventory group membership, not by writing a separate playbook per device.** A host can be in any combination of `k3s_nodes`, `docker_nodes`, `role_1`, `role_2`, `role_3` — or none of them (baseline-only) — see `inventory/hosts.ini` and "Adding a host to a role" below.
+
+To add a new role later (e.g. `monitoring_nodes`), add a new play at the bottom of `site.yml` gated on a new group and a matching `group_vars/monitoring_nodes.yml`, the same way the roles above are done. No forking of the whole playbook required.
 
 ---
 
@@ -116,13 +121,16 @@ The playbook is not destructive by default, but to undo specific tasks you can r
 
 ```
 .
-├── site.yml                   # Main playbook — run this (3 plays: baseline, k3s, docker)
+├── site.yml                   # Main playbook — run this (6 plays: baseline, k3s, docker, role_1, role_2, role_3)
 ├── inventory/
-│   └── hosts.ini              # Managed hosts + role groups (k3s_nodes / docker_nodes)
+│   └── hosts.ini              # Managed hosts + role groups (k3s_nodes / docker_nodes / role_1 / role_2 / role_3)
 ├── group_vars/
 │   ├── all.yml                # Variables shared by every host
 │   ├── k3s_nodes.yml          # K3S version/flags — applies only to [k3s_nodes]
-│   └── docker_nodes.yml       # Docker packages/channel — applies only to [docker_nodes]
+│   ├── docker_nodes.yml       # Docker packages/channel — applies only to [docker_nodes]
+│   ├── role_1.yml             # Placeholder-role vars — applies only to [role_1]
+│   ├── role_2.yml             # Placeholder-role vars — applies only to [role_2]
+│   └── role_3.yml             # Placeholder-role vars — applies only to [role_3]
 ├── host_vars/
 │   ├── node1.yml               # Per-host network config for node1
 │   ├── node2.yml               # Per-host network config for node2
@@ -165,6 +173,14 @@ The playbook is not destructive by default, but to undo specific tasks you can r
 | `docker_packages` | see file | Docker packages installed from the official apt repo |
 | `docker_group_members` | `["{{ admin_user }}"]` | Users added to the `docker` group |
 
+### `group_vars/role_1.yml` / `role_2.yml` / `role_3.yml` — placeholder-role variables
+
+| Variable | Default | Description |
+|----------|---------|-------------|
+| `node_role` | `role_1` / `role_2` / `role_3` | Informational tag surfaced in the placeholder task's debug message |
+
+Each file is a stub — add real variables here as you flesh out what the role does.
+
 ### `host_vars/<node>.yml` — per-host network config
 
 Override `static_ip` and optionally `gateway` / `subnet_prefix` per node:
@@ -200,6 +216,9 @@ Run only specific parts of the playbook with `--tags`:
 | `hostname` | all hosts | Set hostname |
 | `k3s` | `k3s_nodes` only | K3S installation |
 | `docker` | `docker_nodes` only | Docker installation |
+| `role_1` | `role_1` only | Placeholder task |
+| `role_2` | `role_2` only | Placeholder task |
+| `role_3` | `role_3` only | Placeholder task |
 
 Example — only apply networking and hostname:
 
@@ -270,6 +289,69 @@ That's the whole pattern. `site.yml` stays one file; `--tags <role>` and invento
 
 - If **every** node should get it regardless of what else it runs → it belongs in the common baseline play (`hosts: all`), tagged `baseline` (+ a specific tag like `zsh`, `dns`, etc.).
 - If only **some** nodes should get it → it's a new role: new group, new play, new `group_vars/<group>.yml`, own tag. Don't add `when: some_flag_is_true` conditionals to the baseline play to fake this — a real inventory group is easier to reason about, easier to select from Semaphore UI (point a template's inventory/tag at the group), and keeps `--tags <role>` working correctly.
+
+---
+
+## Adding a host to a role (or to several at once)
+
+Assigning a host to a role is entirely an `inventory/hosts.ini` edit — you never touch `site.yml` to onboard a device, only to define a new *kind* of role (see above).
+
+### Single role
+
+Add the host under `[nodes]`, then under the one role group it should run. To make `node4` a Docker host:
+
+```ini
+[nodes]
+node1  ansible_host=192.168.10.10  ansible_user=ubuntu
+node4  ansible_host=192.168.10.13  ansible_user=ubuntu
+
+[docker_nodes]
+node3
+node4
+```
+
+Then add `host_vars/node4.yml` with at least its `static_ip` (see the existing `host_vars/node1.yml` for the shape). Run `ansible-playbook site.yml --limit node4` and it gets the common baseline + Docker — nothing else.
+
+### Multiple roles on the same host — yes, this is supported
+
+**A single host can be listed in as many role groups as you want.** Ansible evaluates `site.yml` play by play, top to bottom, and each play's `hosts:` pattern is checked independently — so a host matching more than one group simply gets every one of those plays applied, in the order they appear in `site.yml` (baseline first, then `k3s`, `docker`, `role_1`, `role_2`, `role_3`).
+
+Example — `node5` should run **both** K3S and `role_1`:
+
+```ini
+[nodes]
+node5  ansible_host=192.168.10.14  ansible_user=ubuntu
+
+[k3s_nodes]
+node1
+node2
+node5
+
+[role_1]
+node5
+```
+
+Running `ansible-playbook site.yml --limit node5` applies: common baseline → K3S role → role_1's tasks, in that order, in one run. No special syntax, no combined group needed — just list the hostname under every group it belongs to.
+
+If you *do* want a shorthand for "always run these two roles together," Ansible supports group-of-groups:
+
+```ini
+[k3s_and_role1:children]
+k3s_nodes
+role_1
+```
+
+This doesn't change what runs (that's still driven by `k3s_nodes` / `role_1` membership and their plays) — it just gives you `--limit k3s_and_role1` as a convenience alias for "everything currently in either group."
+
+### Checking what a host will actually run
+
+Before applying, you can see which groups (and therefore which plays) a host resolves to:
+
+```bash
+ansible-inventory -i inventory/hosts.ini --host node5
+ansible node5 -i inventory/hosts.ini --list-hosts -m ping   # confirms it's reachable
+ansible-playbook site.yml --limit node5 --list-tags          # shows which tags/plays would run
+```
 
 ---
 
