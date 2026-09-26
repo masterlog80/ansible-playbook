@@ -1,0 +1,8 @@
+---
+# =============================================================================
+# Variables for hosts in [role_1]
+# =============================================================================
+# Placeholder — this role currently just proves the pattern (see PLAY in
+# site.yml tagged "role_1"). Replace/extend with whatever real vars the
+# role needs once you fill in its tasks.
+node_role: role_1
