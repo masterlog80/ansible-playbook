@@ -6,20 +6,21 @@ An Ansible playbook for bootstrapping a fleet of Linux nodes (Debian/Ubuntu-base
 
 ## Design: common baseline + role groups
 
-One playbook (`site.yml`), six plays:
+One playbook (`site.yml`), seven plays:
 
 | Play | Runs on | What it does |
 |------|---------|---------------|
-| `System bootstrap (common baseline)` | `hosts: all` | Updates, packages, swap, timezone, NTP, DNS, udev rules (GSM modem, UPS OMRON, UPS APC), sysstat, users, SSH hardening, zsh, autologin, static IP, hostname — every managed node gets this |
+| `System bootstrap (common baseline)` | `hosts: all` | Updates, packages (with `apt --fix-broken` before/after), swap, timezone, NTP, DNS, udev rules (GSM modem, UPS OMRON, UPS APC), disabling sysstat/nvmf-autoconnect, users, SSH hardening, zsh, autologin, static IP, hostname — every managed node gets this |
 | `K3S role` | `hosts: k3s_nodes` | Installs K3S — only on hosts in the `[k3s_nodes]` inventory group |
 | `Docker role` | `hosts: docker_nodes` | Installs Docker Engine + Compose plugin — only on hosts in the `[docker_nodes]` inventory group |
+| `K3S control-plane (master) role` | `hosts: k3s_master` | Installs K3S with control-plane flags, taints the node, installs FluxCD + Helm — only on hosts in the `[k3s_master]` inventory group |
 | `role_1` | `hosts: role_1` | Placeholder role — only on hosts in the `[role_1]` inventory group |
 | `role_2` | `hosts: role_2` | Placeholder role — only on hosts in the `[role_2]` inventory group |
 | `role_3` | `hosts: role_3` | Placeholder role — only on hosts in the `[role_3]` inventory group |
 
 `role_1` / `role_2` / `role_3` are scaffolding — each currently runs a single `debug` task so the pattern is provable end-to-end. Replace the placeholder task in each play with real work (and rename the group/tag/`group_vars` file to something meaningful) once you know what that role should actually do.
 
-**Which device gets what is decided by inventory group membership, not by writing a separate playbook per device.** A host can be in any combination of `k3s_nodes`, `docker_nodes`, `role_1`, `role_2`, `role_3` — or none of them (baseline-only) — see `inventory/hosts.ini` and "Adding a host to a role" below.
+**Which device gets what is decided by inventory group membership, not by writing a separate playbook per device.** A host can be in any combination of `k3s_nodes`, `docker_nodes`, `k3s_master`, `role_1`, `role_2`, `role_3` — or none of them (baseline-only) — see `inventory/hosts.ini` and "Adding a host to a role" below. Don't put the same host in both `k3s_nodes` and `k3s_master` — see the `k3s_master` note in `inventory/hosts.ini`.
 
 To add a new role later (e.g. `monitoring_nodes`), add a new play at the bottom of `site.yml` gated on a new group and a matching `group_vars/monitoring_nodes.yml`, the same way the roles above are done. No forking of the whole playbook required.
 
@@ -28,17 +29,19 @@ To add a new role later (e.g. `monitoring_nodes`), add a new play at the bottom 
 ## Features
 
 - 🔄 **System update** – `apt update` + dist-upgrade on every run
-- 📦 **Package installation** – curated package set from `group_vars/all.yml`
+- 📦 **Package installation** – curated package set from `group_vars/all.yml`, wrapped in `apt --fix-broken` (before and after) in case any packages are left in a broken state
 - 💾 **Disable swap** – required for K3S, applied to every node regardless of role
 - ☸️ **K3S** (`k3s_nodes` group) – downloads and runs the official K3S install script; version and extra flags configurable via `group_vars/k3s_nodes.yml`
+- ☸️ **K3S control-plane** (`k3s_master` group) – installs K3S with `--disable traefik --disable servicelb --disable metrics-server`, taints the node `node-role.kubernetes.io/control-plane=:NoSchedule`, persists `KUBECONFIG=/etc/rancher/k3s/k3s.yaml` in `/etc/environment`, and installs FluxCD + Helm
 - 🐳 **Docker** (`docker_nodes` group) – adds Docker's official apt repo + GPG key, installs `docker-ce`, `docker-ce-cli`, `containerd.io`, `docker-buildx-plugin`, `docker-compose-plugin`, and adds the admin user to the `docker` group
 - 🕐 **Timezone** – sets the system clock to `Asia/Tokyo`
-- 🌐 **DNS & Domain** – configures `systemd-resolved` with custom DNS servers and search domain `salvetti.info`
+- 🌐 **DNS & Domain** – configures `systemd-resolved` with custom DNS servers and search domain `salvetti.info`, disables the DNS stub listener (frees port 53 for a local DNS server like dnsmasq — see [Baeldung](https://www.baeldung.com/linux/dnsmasq-systemd-resolved-conflicts)), and repoints `/etc/resolv.conf` at systemd-resolved's non-stub `resolv.conf` so resolution doesn't break once the stub listener is off
 - 🔌 **udev rules** – `/etc/udev/rules.d/90-qualcomm.rules` (GSM modem, auto-switches a Qualcomm USB stick out of storage mode via `usb_modeswitch`), `/etc/udev/rules.d/90-omron-ups.conf` (OMRON UPS — symlinks to `/dev/ups`, group `nut`), `/etc/udev/rules.d/99-ups.rules` (APC UPS — symlinks to `/dev/ups-network`)
-- 🔇 **Disable sysstat** – stops and masks the sysstat service
-- 👤 **User management** – deletes all regular non-root users, creates user `lorenzo` with passwordless sudo
-- 🔑 **SSH key import** – imports SSH public keys from GitHub account `masterlog80` for both `lorenzo` and `root`
-- 🔒 **Root SSH hardening** – keeps `PermitRootLogin prohibit-password`; initial root key installation is handled separately by `bootstrap.yml`
+- 🔇 **Disable unwanted services** – stops and masks `sysstat` (and clears `/var/log/sysstat/*`) and `nvmf-autoconnect`
+- 👤 **User management** – deletes all regular non-root users other than the admin user, creates user `lorenzo` with passwordless sudo
+- 🔑 **SSH key import** – imports the SSH public key from GitHub account `masterlog80` for `lorenzo` (not root — root never accepts SSH connections, see below)
+- 🔒 **SSH lockdown** – `PermitRootLogin no` (root never accepts SSH connections — root access is only ever obtained via `{{ admin_user }}` + `sudo`/`become`), `PasswordAuthentication no`, `KbdInteractiveAuthentication no` + `ChallengeResponseAuthentication no` (closes the PAM keyboard-interactive gap password-auth-no alone leaves open), `PermitEmptyPasswords no`, `PubkeyAuthentication yes` (explicit), and `AllowUsers {{ admin_user }}` (defense in depth — SSH logins restricted to just this user). See "SSH access" below for the two-phase credential model
+- 🔓 **sshd MaxAuthTries for `lorenzo`** – raises `MaxAuthTries` to 20 for that user only, to avoid sshd dropping the connection with "Too many authentication failures" before it reaches a valid key/password (common when an SSH agent offers many keys)
 - 🖥️ **Oh My Zsh** – installs Oh My Zsh + Powerlevel10k theme for **every user in `zsh_users`** (default: the admin user and `root`), with the plugin set: `kubectl`, `kubectx`, `kube-ps1`, `git`, `zsh-syntax-highlighting`, `zsh-autosuggestions`, `docker`, `docker-compose`, `colorize`, `last-working-dir`. `zsh-syntax-highlighting` and `zsh-autosuggestions` are cloned from their upstream repos (not bundled with Oh My Zsh); the rest ship with Oh My Zsh itself
 - 🔐 **Getty autologin** – configures automatic login as `lorenzo` on the local console
 - 🌐 **Static IP** – deploys a per-host Netplan configuration (defined in `host_vars/`)
@@ -111,48 +114,43 @@ Target just a role (e.g. re-run Docker install across all Docker-role hosts only
 ansible-playbook site.yml --tags docker
 ```
 
-### SSH bootstrap and subsequent key-based access
+### SSH access: connect as `{{ admin_user }}`, never root
 
-The inventory connects to managed nodes as `root`. Fresh nodes are initialized
-with a dedicated `bootstrap.yml` playbook so the normal `site.yml` never needs
-the initial root password.
+**Root never accepts SSH connections at all** (`PermitRootLogin no`) — root access on a managed node is only ever obtained via `{{ admin_user }}` (`lorenzo`) + `sudo`/`become`, never a direct root login. This is why every play in `site.yml` uses `become: true`: Ansible connects as `{{ admin_user }}` and escalates to root per-task via passwordless sudo, rather than connecting as root directly.
 
-#### First run — bootstrap
+**Companion hardening beyond the two headline settings** (`PermitRootLogin no` + `PasswordAuthentication no`), closing gaps those two leave open on their own:
 
-Run `bootstrap.yml` once for each fresh node:
+| Setting | Value | Why |
+|---------|-------|-----|
+| `KbdInteractiveAuthentication` | `no` | `PasswordAuthentication no` alone doesn't block PAM-driven keyboard-interactive prompts, which can still accept a password through a different code path |
+| `ChallengeResponseAuthentication` | `no` | Legacy alias for the same setting, kept for older OpenSSH versions that don't recognize `KbdInteractiveAuthentication` |
+| `PermitEmptyPasswords` | `no` | Blocks login for any account with no password set |
+| `PubkeyAuthentication` | `yes` | Explicit, so it can't be silently disabled elsewhere |
+| `AllowUsers` | `{{ admin_user }}` | Defense in depth — SSH logins restricted to just this user, even though non-admin users are already deleted and root can't log in at all |
 
-1. Semaphore uses an SSH credential containing:
-   - **User:** `root`
-   - **Password:** the node's default password (for these Orange Pi nodes: `orangepi`)
-2. `bootstrap.yml` installs the public keys published by
-   `admin_github_user` into `/root/.ssh/authorized_keys`.
-3. It changes root SSH access to:
-   `PermitRootLogin prohibit-password`
-   and validates `sshd_config` before restarting SSH.
-4. The password is supplied by Semaphore at runtime and is **not stored in Git**.
+> **Supersedes `bootstrap.yml`:** an earlier revision of this repo added a separate `bootstrap.yml` for a one-time root+password run that installed a standing root SSH key (`PermitRootLogin prohibit-password`). Under the model below, root never accepts an SSH connection at all, so a permanent root key serves no purpose — `bootstrap.yml` is no longer part of the onboarding flow. It's left in the repo for now; delete it (or repurpose it for `{{ admin_user }}`) once you've confirmed you don't need it.
 
-For CLI use, the equivalent is:
+**Two-phase credential model, matching `inventory/hosts.ini`'s `ansible_user={{ admin_user }}`:**
 
-```bash
-ansible-playbook -i inventory/hosts.ini bootstrap.yml --ask-pass
-```
+1. **First run on a brand-new node — username/password credential**
+   `{{ admin_user }}` must already exist on the node with a known password before Ansible can reach it at all (e.g. created during OS install/imaging — this playbook's own user-creation task can't help here, since Ansible needs to log in before it can run anything). Configure Semaphore's SSH credential as:
+   - **User:** `{{ admin_user }}`
+   - **Password:** the account's current password
+   This run adds `{{ admin_user }}`'s GitHub public key (`ansible.posix.authorized_key`, fetched from `https://github.com/<admin_github_user>.keys`), grants passwordless sudo, and then locks down `sshd` (`PermitRootLogin no`, `PasswordAuthentication no`).
+2. **Every run after that — private-key credential**
+   Once the key is installed and password auth is disabled, switch Semaphore's SSH credential for that node to:
+   - **User:** `{{ admin_user }}`
+   - **Private key:** the key matching the public key published at `https://github.com/<admin_github_user>.keys`
+   Root privilege for any task is obtained via `become`/`sudo`, not by SSHing in as root — which is no longer possible anyway.
 
-#### Subsequent runs — normal playbook
+Switching Semaphore's credential from password to private key after the first run is a manual step done in Semaphore's credential configuration — this playbook doesn't (and can't) automate that switch itself, since it happens outside the SSH session the playbook runs in.
 
-After bootstrap, run `site.yml` with the existing private SSH key:
+No password or private key is committed to this repository.
 
-```bash
-ansible-playbook -i inventory/hosts.ini site.yml
-```
-
-In Semaphore, use a separate SSH-key credential containing your existing
-private key. The private key stays on Semaphore (the Ansible controller) and
-is never copied to the managed nodes or committed to this repository.
-
-> **Important:** the private key used by Semaphore must correspond to one of
-> the public keys currently published at
-> `https://github.com/<admin_github_user>.keys`. If it does not, update the
-> `authorized_key` source in `bootstrap.yml` to your exact public key.
+> **Important:** the private key used by Semaphore/Ansible must correspond to a public
+> key currently published at `https://github.com/<admin_github_user>.keys`.
+> If your existing private key is not the one published on GitHub, the
+> `authorized_key` task must instead be changed to use that exact public key.
 
 ### Uninstall / rollback
 
@@ -164,13 +162,15 @@ The playbook is not destructive by default, but to undo specific tasks you can r
 
 ```
 .
-├── bootstrap.yml              # One-time root SSH bootstrap (password -> key)
-├── site.yml                   # Main playbook — run after bootstrap\n├── inventory/
-│   └── hosts.ini              # Managed hosts + role groups (k3s_nodes / docker_nodes / role_1 / role_2 / role_3)
+├── bootstrap.yml               # Superseded — see "SSH access" below; kept until confirmed unneeded
+├── site.yml                   # Main playbook — run this (7 plays: baseline, k3s, docker, k3s_master, role_1, role_2, role_3)
+├── inventory/
+│   └── hosts.ini              # Managed hosts + role groups (k3s_nodes / docker_nodes / k3s_master / role_1 / role_2 / role_3)
 ├── group_vars/
 │   ├── all.yml                # Variables shared by every host
 │   ├── k3s_nodes.yml          # K3S version/flags — applies only to [k3s_nodes]
 │   ├── docker_nodes.yml       # Docker packages/channel — applies only to [docker_nodes]
+│   ├── k3s_master.yml         # K3S control-plane flags, FluxCD/Helm versions — applies only to [k3s_master]
 │   ├── role_1.yml             # Placeholder-role vars — applies only to [role_1]
 │   ├── role_2.yml             # Placeholder-role vars — applies only to [role_2]
 │   └── role_3.yml             # Placeholder-role vars — applies only to [role_3]
@@ -219,6 +219,16 @@ The playbook is not destructive by default, but to undo specific tasks you can r
 | `docker_packages` | see file | Docker packages installed from the official apt repo |
 | `docker_group_members` | `["{{ admin_user }}"]` | Users added to the `docker` group |
 
+### `group_vars/k3s_master.yml` — K3S control-plane variables
+
+| Variable | Default | Description |
+|----------|---------|-------------|
+| `k3s_master_version` | `""` (latest) | K3S version to install on control-plane nodes |
+| `k3s_master_install_flags` | `--disable traefik --disable servicelb --disable metrics-server` | Flags passed to the K3S installer |
+| `k3s_master_taint_effect` | `NoSchedule` | Taint effect applied to `node-role.kubernetes.io/control-plane` |
+| `fluxcd_version` | `latest` | FluxCD CLI version to install (e.g. `v2.3.0`) |
+| `helm_version` | `latest` | Helm version to install (e.g. `v3.15.3`) |
+
 ### `group_vars/role_1.yml` / `role_2.yml` / `role_3.yml` — placeholder-role variables
 
 | Variable | Default | Description |
@@ -247,23 +257,27 @@ Run only specific parts of the playbook with `--tags`:
 |-----|-------|---------|
 | `baseline` | all hosts | Everything in the common bootstrap play |
 | `update` | all hosts | System update + dist-upgrade |
-| `packages` | all hosts | Package installation |
+| `packages` | all hosts | Package installation (incl. `apt --fix-broken` before/after) |
 | `swap` | all hosts | Disable swap |
 | `timezone` | all hosts | Set timezone |
 | `ntp` | all hosts | Configure Chrony / systemd-timesyncd |
-| `dns` | all hosts | Configure systemd-resolved |
+| `dns` | all hosts | Configure systemd-resolved (incl. stub-listener disable + resolv.conf repoint) |
 | `ups` | all hosts | UPS udev rules (OMRON + APC) |
 | `modem` | all hosts | GSM modem udev rule (Qualcomm) |
 | `udev` | all hosts | All three udev rules together (GSM modem + both UPS rules) |
-| `sysstat` | all hosts | Disable sysstat |
+| `sysstat` | all hosts | Disable sysstat + clear `/var/log/sysstat/*` |
+| `nvmf` | all hosts | Disable nvmf-autoconnect |
 | `users` | all hosts | User management |
-| `ssh` | all hosts | SSH hardening |
+| `ssh` | all hosts | SSH hardening (incl. MaxAuthTries for `{{ admin_user }}`) |
 | `zsh` | all hosts | Oh My Zsh + Powerlevel10k + plugins, for every user in `zsh_users` |
 | `autologin` | all hosts | Getty autologin |
 | `network` | all hosts | Static IP via Netplan |
 | `hostname` | all hosts | Set hostname |
 | `k3s` | `k3s_nodes` only | K3S installation |
 | `docker` | `docker_nodes` only | Docker installation |
+| `k3s_master` | `k3s_master` only | K3S control-plane install, taint, KUBECONFIG, FluxCD, Helm |
+| `fluxcd` | `k3s_master` only | FluxCD install only |
+| `helm` | `k3s_master` only | Helm install only |
 | `role_1` | `role_1` only | Placeholder task |
 | `role_2` | `role_2` only | Placeholder task |
 | `role_3` | `role_3` only | Placeholder task |
@@ -405,41 +419,21 @@ ansible-playbook site.yml --limit node5 --list-tags          # shows which tags/
 
 ## Running from Semaphore UI
 
-The SSH bootstrap uses two separate task templates/credentials:
+Two credentials, matching the two-phase model in "SSH access" above:
 
-1. **Bootstrap template — run once per fresh node**
-   - Playbook: `bootstrap.yml`
-   - Inventory: `inventory/hosts.ini`
-   - SSH credential: **User `root` + the initial node password**
-   - For the current Orange Pi images, the initial password is `orangepi`.
-2. **Normal template — use after bootstrap**
-   - Playbook: `site.yml`
-   - Inventory: `inventory/hosts.ini`
-   - SSH credential: **User `root` + your existing private SSH key**
+- **Bootstrap credential (first run on a new node):** User `{{ admin_user }}` + password
+- **Normal credential (every run after):** User `{{ admin_user }}` + private key
 
-The bootstrap password is stored only in Semaphore's credential store and is
-never committed to Git. The private key is also stored only on the Ansible
-controller/Semaphore. Managed nodes receive only the public key.
+Root privilege for any task comes from `become`/`sudo` inside the playbook, not from which SSH credential is used — both credentials connect as `{{ admin_user }}`, never root.
 
-The recommended workflow is therefore:
+No password or private key is committed to this repository.
 
-```text
-Fresh node
-   │
-   ├── bootstrap.yml + root/password credential
-   │       └── installs public key + disables root password SSH
-   │
-   └── site.yml + root/private-key credential
-           └── normal configuration and maintenance
-```
-
-## Running from Semaphore UI
-
-If you're driving this playbook from a UI (e.g. [ansible-docker](https://github.com/masterlog80/ansible-docker)'s Semaphore UI stack) rather than the CLI, the role groups map directly onto task templates:
+The role groups map directly onto task templates:
 
 - One template running `site.yml` with no `--tags` / `--limit` set → applies baseline + whichever role each host in the inventory belongs to.
 - A second template with `--tags k3s` (or a Survey Variable for the tag) → touches only `k3s_nodes`.
 - A third with `--tags docker` → touches only `docker_nodes`.
+- A fourth with `--tags k3s_master` → touches only `k3s_master`.
 
 Target IP/host selection then comes from which inventory (or `--limit`/survey variable) each template is pointed at, rather than from separate playbooks.
 

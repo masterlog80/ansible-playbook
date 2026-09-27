@@ -92,10 +92,20 @@
     # -------------------------------------------------------------------------
     # 2. Package Installation
     # -------------------------------------------------------------------------
+    - name: Fix broken packages (pre-install)
+      ansible.builtin.apt:
+        state: fixed
+      tags: [baseline, packages]
+
     - name: Install required packages
       ansible.builtin.apt:
         name: "{{ packages }}"
         state: present
+      tags: [baseline, packages]
+
+    - name: Fix broken packages (post-install)
+      ansible.builtin.apt:
+        state: fixed
       tags: [baseline, packages]
 
     # -------------------------------------------------------------------------
@@ -257,6 +267,19 @@
         enabled: true
       tags: [baseline, dns]
 
+    # DNSStubListener=no above frees port 53, but /etc/resolv.conf on
+    # Ubuntu/Debian defaults to a symlink pointing at stub-resolv.conf
+    # (which lists the now-dead 127.0.0.53 stub address). Repoint it at
+    # systemd-resolved's non-stub resolv.conf so DNS resolution keeps
+    # working instead of breaking once the stub listener is off.
+    - name: Point /etc/resolv.conf at systemd-resolved's non-stub resolv.conf
+      ansible.builtin.file:
+        src: /run/systemd/resolve/resolv.conf
+        dest: /etc/resolv.conf
+        state: link
+        force: true
+      tags: [baseline, dns]
+
     # -------------------------------------------------------------------------
     # 7. udev rules (GSM modem, UPS OMRON, UPS APC)
     # -------------------------------------------------------------------------
@@ -300,7 +323,7 @@
       tags: [baseline, udev, ups]
 
     # -------------------------------------------------------------------------
-    # 8. Disable sysstat
+    # 8. Disable unwanted services
     # -------------------------------------------------------------------------
     - name: Stop and disable sysstat service
       ansible.builtin.service:
@@ -309,6 +332,27 @@
         enabled: false
       ignore_errors: true   # service may not be present on all systems
       tags: [baseline, sysstat]
+
+    - name: Check if /var/log/sysstat exists
+      ansible.builtin.stat:
+        path: /var/log/sysstat
+      register: sysstat_log_dir
+      tags: [baseline, sysstat]
+
+    - name: Delete sysstat log files
+      ansible.builtin.shell: rm -rf /var/log/sysstat/*
+      args:
+        warn: false
+      when: sysstat_log_dir.stat.exists
+      tags: [baseline, sysstat]
+
+    - name: Stop and disable nvmf-autoconnect service
+      ansible.builtin.service:
+        name: nvmf-autoconnect
+        state: stopped
+        enabled: false
+      ignore_errors: true   # service may not be present on all systems
+      tags: [baseline, nvmf]
 
     # -------------------------------------------------------------------------
     # 9. User management
@@ -389,17 +433,135 @@
       tags: [baseline, users]
 
     # -------------------------------------------------------------------------
-    # 10. Allow root SSH login only with public-key authentication
+    # 10. Disable root SSH login entirely + disable password authentication
     # -------------------------------------------------------------------------
-    # Root key installation is handled by bootstrap.yml on fresh nodes.
-    # The normal site playbook keeps this setting idempotently enforced so
-    # root password authentication remains disabled for SSH.
-    - name: Allow root SSH login only with public key
+    # Authentication model: Ansible connects as {{ admin_user }} (never
+    # root) via SSH. A brand-new node's first run uses a
+    # username/password credential for {{ admin_user }} — this requires
+    # {{ admin_user }} to already exist on the node with a known password
+    # before Ansible can reach it (e.g. created during OS install/imaging).
+    # That first run adds {{ admin_user }}'s GitHub public key (task
+    # above) and grants passwordless sudo (task above), so subsequent
+    # runs authenticate with that private key instead and use
+    # become/sudo — not a root SSH login — for anything needing root.
+    # Switching Semaphore's SSH credential from password to private key
+    # after the first run is expected/required and is done outside this
+    # playbook (in Semaphore's credential configuration).
+    #
+    # With PermitRootLogin=no, root can never SSH in at all — by design,
+    # since root access is only ever obtained via {{ admin_user }} + sudo.
+    # With PasswordAuthentication=no, no user (including {{ admin_user }})
+    # can SSH in with a password once this task has run — only the key.
+    #
+    # Supersedes bootstrap.yml's approach (PermitRootLogin
+    # prohibit-password + a standing root SSH key): under this model root
+    # never accepts an SSH connection at all, so a permanent root key is
+    # unnecessary and bootstrap.yml's job is obsolete. See the note in
+    # README's "SSH access" section.
+    - name: Disable root SSH login entirely
       ansible.builtin.lineinfile:
         path: /etc/ssh/sshd_config
         regexp: '^#?PermitRootLogin'
-        line: "PermitRootLogin prohibit-password"
+        line: "PermitRootLogin no"
         state: present
+        validate: "/usr/sbin/sshd -t -f %s"
+      notify: Restart sshd
+      tags: [baseline, ssh]
+
+    - name: Disable SSH password authentication
+      ansible.builtin.lineinfile:
+        path: /etc/ssh/sshd_config
+        regexp: '^#?PasswordAuthentication'
+        line: "PasswordAuthentication no"
+        state: present
+        validate: "/usr/sbin/sshd -t -f %s"
+      notify: Restart sshd
+      tags: [baseline, ssh]
+
+    # The four tasks below close the common gaps left by PermitRootLogin=no
+    # + PasswordAuthentication=no alone (industry-standard companions to
+    # that pair — see e.g. the Mozilla OpenSSH guidelines / CIS Benchmarks):
+    - name: Ensure public-key authentication is enabled
+      ansible.builtin.lineinfile:
+        path: /etc/ssh/sshd_config
+        regexp: '^#?PubkeyAuthentication'
+        line: "PubkeyAuthentication yes"
+        state: present
+        validate: "/usr/sbin/sshd -t -f %s"
+      notify: Restart sshd
+      tags: [baseline, ssh]
+
+    # PasswordAuthentication=no does NOT by itself block PAM-driven
+    # keyboard-interactive prompts, which on some systems still allow a
+    # password to be entered through a different code path. This closes
+    # that gap. ChallengeResponseAuthentication is the older/deprecated
+    # name for the same setting, kept here too for OpenSSH versions where
+    # KbdInteractiveAuthentication isn't recognized.
+    - name: Disable keyboard-interactive authentication
+      ansible.builtin.lineinfile:
+        path: /etc/ssh/sshd_config
+        regexp: '^#?KbdInteractiveAuthentication'
+        line: "KbdInteractiveAuthentication no"
+        state: present
+        validate: "/usr/sbin/sshd -t -f %s"
+      notify: Restart sshd
+      tags: [baseline, ssh]
+
+    - name: Disable challenge-response authentication (legacy alias)
+      ansible.builtin.lineinfile:
+        path: /etc/ssh/sshd_config
+        regexp: '^#?ChallengeResponseAuthentication'
+        line: "ChallengeResponseAuthentication no"
+        state: present
+        validate: "/usr/sbin/sshd -t -f %s"
+      notify: Restart sshd
+      tags: [baseline, ssh]
+
+    - name: Disable empty-password logins
+      ansible.builtin.lineinfile:
+        path: /etc/ssh/sshd_config
+        regexp: '^#?PermitEmptyPasswords'
+        line: "PermitEmptyPasswords no"
+        state: present
+        validate: "/usr/sbin/sshd -t -f %s"
+      notify: Restart sshd
+      tags: [baseline, ssh]
+
+    # Defense in depth: even though non-admin users are deleted (task
+    # above) and root can't SSH in at all, explicitly restrict SSH logins
+    # to {{ admin_user }} only. insertafter anchors this to a directive
+    # that's guaranteed to already exist above the MaxAuthTries "Match
+    # User" block further down, so this stays a global (not Match-scoped)
+    # directive regardless of run order.
+    - name: Restrict SSH logins to {{ admin_user }} only
+      ansible.builtin.lineinfile:
+        path: /etc/ssh/sshd_config
+        regexp: '^AllowUsers'
+        line: "AllowUsers {{ admin_user }}"
+        insertafter: '^PasswordAuthentication'
+        state: present
+        validate: "/usr/sbin/sshd -t -f %s"
+      notify: Restart sshd
+      tags: [baseline, ssh]
+
+    # -------------------------------------------------------------------------
+    # 10b. Raise MaxAuthTries for {{ admin_user }} — avoids sshd dropping the
+    #      connection with "Too many authentication failures" before it ever
+    #      reaches the right key/password, which happens when an SSH agent
+    #      offers more keys than sshd's default MaxAuthTries (6) allows.
+    #      Best-effort fix for the symptom described in the linked Reddit
+    #      thread — https://www.reddit.com/r/linuxquestions/comments/17l75ir/
+    #      (thread content couldn't be fetched directly to confirm the exact
+    #      recommended fix; this is the standard remedy for that symptom).
+    # -------------------------------------------------------------------------
+    - name: Raise sshd MaxAuthTries for {{ admin_user }}
+      ansible.builtin.blockinfile:
+        path: /etc/ssh/sshd_config
+        marker: "# {mark} ANSIBLE MANAGED BLOCK - {{ admin_user }} MaxAuthTries"
+        insertafter: EOF
+        block: |
+          Match User {{ admin_user }}
+              MaxAuthTries 20
         validate: "/usr/sbin/sshd -t -f %s"
       notify: Restart sshd
       tags: [baseline, ssh]
@@ -646,7 +808,96 @@
       tags: [docker]
 
 # =============================================================================
-# PLAY 4 — role_1 (hosts in [role_1])
+# PLAY 4 — K3S control-plane / master role (hosts in [k3s_master])
+# =============================================================================
+- name: K3S control-plane (master) role
+  hosts: k3s_master
+  become: true
+  tags: [k3s_master]
+
+  tasks:
+    - name: Download K3S install script
+      ansible.builtin.get_url:
+        url: https://get.k3s.io
+        dest: /tmp/k3s-install.sh
+        mode: "0755"
+      tags: [k3s_master]
+
+    - name: Run K3S install script (control-plane flags)
+      ansible.builtin.shell: /tmp/k3s-install.sh
+      environment:
+        INSTALL_K3S_VERSION: "{{ k3s_master_version }}"
+        INSTALL_K3S_EXEC: "{{ k3s_master_install_flags }}"
+      args:
+        creates: /usr/local/bin/k3s
+      tags: [k3s_master]
+
+    - name: Wait for the control-plane node to be Ready
+      ansible.builtin.command: >-
+        /usr/local/bin/k3s kubectl wait --for=condition=Ready
+        node/{{ ansible_hostname }} --timeout=180s
+      changed_when: false
+      retries: 6
+      delay: 10
+      register: k3s_master_node_ready
+      until: k3s_master_node_ready.rc == 0
+      tags: [k3s_master]
+
+    # --overwrite makes this idempotent across re-runs (adds the taint if
+    # missing, harmlessly re-applies the same value if already present).
+    - name: Taint control-plane node so regular workloads don't schedule on it
+      ansible.builtin.command: >-
+        /usr/local/bin/k3s kubectl taint nodes {{ ansible_hostname }}
+        node-role.kubernetes.io/control-plane=:{{ k3s_master_taint_effect }}
+        --overwrite
+      register: k3s_master_taint
+      changed_when: "'not modified' not in k3s_master_taint.stdout"
+      tags: [k3s_master]
+
+    # The original request's "export KUBECONFIG=..." only sets it for one
+    # shell session; persisting it in /etc/environment (idempotently, via
+    # lineinfile rather than a repeated "echo >> ") is what actually makes
+    # it available to every future login/session on this node.
+    - name: Persist KUBECONFIG in /etc/environment
+      ansible.builtin.lineinfile:
+        path: /etc/environment
+        regexp: '^KUBECONFIG='
+        line: "KUBECONFIG=/etc/rancher/k3s/k3s.yaml"
+        state: present
+      tags: [k3s_master]
+
+    - name: Download FluxCD install script
+      ansible.builtin.get_url:
+        url: https://fluxcd.io/install.sh
+        dest: /tmp/flux-install.sh
+        mode: "0755"
+      tags: [k3s_master, fluxcd]
+
+    - name: Run FluxCD install script
+      ansible.builtin.shell: /tmp/flux-install.sh
+      environment:
+        FLUX_VERSION: "{{ '' if fluxcd_version == 'latest' else fluxcd_version }}"
+      args:
+        creates: /usr/local/bin/flux
+      tags: [k3s_master, fluxcd]
+
+    - name: Download Helm install script
+      ansible.builtin.get_url:
+        url: https://raw.githubusercontent.com/helm/helm/main/scripts/get-helm-3
+        dest: /tmp/get-helm-3.sh
+        mode: "0755"
+      tags: [k3s_master, helm]
+
+    - name: Run Helm install script
+      ansible.builtin.shell: /tmp/get-helm-3.sh
+      environment:
+        DESIRED_VERSION: "{{ '' if helm_version == 'latest' else helm_version }}"
+      args:
+        creates: /usr/local/bin/helm
+      tags: [k3s_master, helm]
+
+# =============================================================================
+# PLAY 5 — role_1 (hosts in [role_1])
 # =============================================================================
 # Placeholder role added to demonstrate/exercise the pattern described in
 # README.md ("Adding a new role"). Replace the placeholder task below with
@@ -665,7 +916,7 @@
       tags: [role_1]
 
 # =============================================================================
-# PLAY 5 — role_2 (hosts in [role_2])
+# PLAY 6 — role_2 (hosts in [role_2])
 # =============================================================================
 # Placeholder role added to demonstrate/exercise the pattern described in
 # README.md ("Adding a new role"). Replace the placeholder task below with
@@ -684,7 +935,7 @@
       tags: [role_2]
 
 # =============================================================================
-# PLAY 6 — role_3 (hosts in [role_3])
+# PLAY 7 — role_3 (hosts in [role_3])
 # =============================================================================
 # Placeholder role added to demonstrate/exercise the pattern described in
 # README.md ("Adding a new role"). Replace the placeholder task below with

@@ -1,0 +1,25 @@
+---
+# =============================================================================
+# Variables for hosts in [k3s_master]
+# =============================================================================
+node_role: k3s_master
+
+# Set to a specific version (e.g. "v1.29.3+k3s1") or leave empty for latest.
+k3s_master_version: ""
+
+# Flags passed to the K3S installer for control-plane nodes. Disables the
+# bundled Traefik ingress, ServiceLB load balancer, and metrics-server so
+# you can install your own (or manage them via FluxCD) instead.
+k3s_master_install_flags: "--disable traefik --disable servicelb --disable metrics-server"
+
+# Effect applied to the control-plane taint. NoSchedule (default) keeps
+# regular workloads off the control-plane node without evicting anything
+# already running there; use NoExecute instead if you also want existing
+# non-tolerating pods evicted.
+k3s_master_taint_effect: "NoSchedule"
+
+# FluxCD CLI version (e.g. "v2.3.0") or "latest".
+fluxcd_version: "latest"
+
+# Helm version (e.g. "v3.15.3") or "latest".
+helm_version: "latest"
