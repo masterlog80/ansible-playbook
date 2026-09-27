@@ -39,8 +39,8 @@ To add a new role later (e.g. `monitoring_nodes`), add a new play at the bottom 
 - 🔌 **udev rules** – `/etc/udev/rules.d/90-qualcomm.rules` (GSM modem, auto-switches a Qualcomm USB stick out of storage mode via `usb_modeswitch`), `/etc/udev/rules.d/90-omron-ups.conf` (OMRON UPS — symlinks to `/dev/ups`, group `nut`), `/etc/udev/rules.d/99-ups.rules` (APC UPS — symlinks to `/dev/ups-network`)
 - 🔇 **Disable unwanted services** – stops and masks `sysstat` (and clears `/var/log/sysstat/*`) and `nvmf-autoconnect`
 - 👤 **User management** – deletes all regular non-root users other than the admin user, creates user `lorenzo` with passwordless sudo
-- 🔑 **SSH key import** – imports the SSH public key from GitHub account `masterlog80` for `lorenzo` (not root — root never accepts SSH connections, see below)
-- 🔒 **SSH lockdown** – `PermitRootLogin no` (root never accepts SSH connections — root access is only ever obtained via `{{ admin_user }}` + `sudo`/`become`), `PasswordAuthentication no`, `KbdInteractiveAuthentication no` + `ChallengeResponseAuthentication no` (closes the PAM keyboard-interactive gap password-auth-no alone leaves open), `PermitEmptyPasswords no`, `PubkeyAuthentication yes` (explicit), and `AllowUsers {{ admin_user }}` (defense in depth — SSH logins restricted to just this user). See "SSH access" below for the two-phase credential model
+- 🔑 **SSH key import** – imports the SSH public key from GitHub account `masterlog80` for `lorenzo` (not root — root's only SSH access is the one-time password-based bootstrap run, see below)
+- 🔒 **SSH lockdown** – `PermitRootLogin no` (root's only SSH access is the one-time bootstrap run; after that, root access is only ever obtained via `{{ admin_user }}` + `sudo`/`become`), `PasswordAuthentication no`, `KbdInteractiveAuthentication no` + `ChallengeResponseAuthentication no` (closes the PAM keyboard-interactive gap password-auth-no alone leaves open), `PermitEmptyPasswords no`, `PubkeyAuthentication yes` (explicit), and `AllowUsers {{ admin_user }}` (defense in depth — SSH logins restricted to just this user). See "SSH access" below for the two-phase credential model
 - 🔓 **sshd MaxAuthTries for `lorenzo`** – raises `MaxAuthTries` to 20 for that user only, to avoid sshd dropping the connection with "Too many authentication failures" before it reaches a valid key/password (common when an SSH agent offers many keys)
 - 🖥️ **Oh My Zsh** – installs Oh My Zsh + Powerlevel10k theme for **every user in `zsh_users`** (default: the admin user and `root`), with the plugin set: `kubectl`, `kubectx`, `kube-ps1`, `git`, `zsh-syntax-highlighting`, `zsh-autosuggestions`, `docker`, `docker-compose`, `colorize`, `last-working-dir`. `zsh-syntax-highlighting` and `zsh-autosuggestions` are cloned from their upstream repos (not bundled with Oh My Zsh); the rest ship with Oh My Zsh itself
 - 🔐 **Getty autologin** – configures automatic login as `lorenzo` on the local console
@@ -114,9 +114,9 @@ Target just a role (e.g. re-run Docker install across all Docker-role hosts only
 ansible-playbook site.yml --tags docker
 ```
 
-### SSH access: connect as `{{ admin_user }}`, never root
+### SSH access: `root` bootstraps once, then `{{ admin_user }}` + sudo
 
-**Root never accepts SSH connections at all** (`PermitRootLogin no`) — root access on a managed node is only ever obtained via `{{ admin_user }}` (`lorenzo`) + `sudo`/`become`, never a direct root login. This is why every play in `site.yml` uses `become: true`: Ansible connects as `{{ admin_user }}` and escalates to root per-task via passwordless sudo, rather than connecting as root directly.
+**Root never accepts SSH connections after the bootstrap run** (`PermitRootLogin no`) — from then on, root access on a managed node is only ever obtained via `{{ admin_user }}` (`lorenzo`) + `sudo`/`become`, never a direct root login. This is why every play in `site.yml` uses `become: true`: on every run after bootstrap, Ansible connects as `{{ admin_user }}` and escalates to root per-task via passwordless sudo, rather than connecting as root directly.
 
 **Companion hardening beyond the two headline settings** (`PermitRootLogin no` + `PasswordAuthentication no`), closing gaps those two leave open on their own:
 
@@ -132,18 +132,18 @@ ansible-playbook site.yml --tags docker
 
 **Two-phase credential model, matching `inventory/hosts.ini`'s `ansible_user={{ admin_user }}`:**
 
-1. **First run on a brand-new node — username/password credential**
-   `{{ admin_user }}` must already exist on the node with a known password before Ansible can reach it at all (e.g. created during OS install/imaging — this playbook's own user-creation task can't help here, since Ansible needs to log in before it can run anything). Configure Semaphore's SSH credential as:
-   - **User:** `{{ admin_user }}`
-   - **Password:** the account's current password
-   This run adds `{{ admin_user }}`'s GitHub public key (`ansible.posix.authorized_key`, fetched from `https://github.com/<admin_github_user>.keys`), grants passwordless sudo, and then locks down `sshd` (`PermitRootLogin no`, `PasswordAuthentication no`).
-2. **Every run after that — private-key credential**
-   Once the key is installed and password auth is disabled, switch Semaphore's SSH credential for that node to:
+1. **First run on a brand-new node — `root` + the node's built-in default password**
+   A truly fresh node only has a known credential for `root` (the OS/image's default password) — it doesn't yet have `{{ admin_user }}` at all, so there's no `{{ admin_user }}` password to connect with. Configure Semaphore's SSH credential for this one-time run as:
+   - **User:** `root`
+   - **Password:** the node's built-in default password
+   Since the connection is already root, `become: true` is effectively a no-op for this run (Ansible skips the sudo wrapper when you're already the target user). This run creates `{{ admin_user }}`, adds its GitHub public key (`ansible.posix.authorized_key`, fetched from `https://github.com/<admin_github_user>.keys`), grants it passwordless sudo, and then locks down `sshd` for good — including `PermitRootLogin no`, which means this is also the **last** run that can ever connect as `root` over SSH.
+2. **Every run after that — `{{ admin_user }}` + private-key credential**
+   Switch Semaphore's SSH credential for that node to:
    - **User:** `{{ admin_user }}`
    - **Private key:** the key matching the public key published at `https://github.com/<admin_github_user>.keys`
-   Root privilege for any task is obtained via `become`/`sudo`, not by SSHing in as root — which is no longer possible anyway.
+   Root privilege for any task is obtained via `become`/`sudo` from `{{ admin_user }}` — a direct root SSH login is no longer possible at all.
 
-Switching Semaphore's credential from password to private key after the first run is a manual step done in Semaphore's credential configuration — this playbook doesn't (and can't) automate that switch itself, since it happens outside the SSH session the playbook runs in.
+Both `inventory/hosts.ini`'s static `ansible_user={{ admin_user }}` and Semaphore's own credential "user" field can set the SSH user; whichever mechanism you use to run Semaphore's bootstrap template, it needs to override the connecting user to `root` for that one-time run specifically — the inventory's `{{ admin_user }}` default is written for the steady-state (phase 2) case. Switching Semaphore's credential (both the user and the auth method) between phase 1 and phase 2 is a manual step done in Semaphore's credential/template configuration — this playbook doesn't (and can't) automate that switch itself, since it happens outside the SSH session the playbook runs in.
 
 No password or private key is committed to this repository.
 
@@ -421,10 +421,10 @@ ansible-playbook site.yml --limit node5 --list-tags          # shows which tags/
 
 Two credentials, matching the two-phase model in "SSH access" above:
 
-- **Bootstrap credential (first run on a new node):** User `{{ admin_user }}` + password
+- **Bootstrap credential (first run on a new node):** User `root` + the node's built-in default password. Also override the run's connecting user/inventory to `root` for this template specifically — `inventory/hosts.ini`'s static `ansible_user={{ admin_user }}` is written for the steady-state case below, not bootstrap.
 - **Normal credential (every run after):** User `{{ admin_user }}` + private key
 
-Root privilege for any task comes from `become`/`sudo` inside the playbook, not from which SSH credential is used — both credentials connect as `{{ admin_user }}`, never root.
+Root privilege for any *task* always comes from `become`/`sudo` inside the playbook. The bootstrap run is the one exception where the SSH connection itself is root (since `{{ admin_user }}` doesn't exist yet to connect as) — `become` is a no-op there since you're already root. Every run after bootstrap connects as `{{ admin_user }}`, never root; root SSH access is fully disabled by the end of the bootstrap run.
 
 No password or private key is committed to this repository.
 
