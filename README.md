@@ -40,7 +40,7 @@ To add a new role later (e.g. `monitoring_nodes`), add a new play at the bottom 
 - 🔇 **Disable unwanted services** – stops and masks `sysstat` (and clears `/var/log/sysstat/*`) and `nvmf-autoconnect`
 - 👤 **User management** – deletes all regular non-root users other than the admin user, creates user `lorenzo` with passwordless sudo
 - 🔑 **SSH key import** – imports SSH public keys from GitHub account `masterlog80` for both `lorenzo` and `root`
-- 🔒 **SSH lockdown** – `PermitRootLogin no` and `PasswordAuthentication no` — no password-based SSH login for any user, on any node. Requires an SSH key to already be authorized on a node before this playbook can reach it (see "SSH access" below)
+- 🔒 **SSH lockdown** – `PermitRootLogin no` (root never accepts SSH connections — root access is only ever obtained via `{{ admin_user }}` + `sudo`/`become`) and `PasswordAuthentication no` (no password SSH login for any user once the first-run key is installed). See "SSH access" below for the two-phase credential model
 - 🔓 **sshd MaxAuthTries for `lorenzo`** – raises `MaxAuthTries` to 20 for that user only, to avoid sshd dropping the connection with "Too many authentication failures" before it reaches a valid key/password (common when an SSH agent offers many keys)
 - 🖥️ **Oh My Zsh** – installs Oh My Zsh + Powerlevel10k theme for **every user in `zsh_users`** (default: the admin user and `root`), with the plugin set: `kubectl`, `kubectx`, `kube-ps1`, `git`, `zsh-syntax-highlighting`, `zsh-autosuggestions`, `docker`, `docker-compose`, `colorize`, `last-working-dir`. `zsh-syntax-highlighting` and `zsh-autosuggestions` are cloned from their upstream repos (not bundled with Oh My Zsh); the rest ship with Oh My Zsh itself
 - 🔐 **Getty autologin** – configures automatic login as `lorenzo` on the local console
@@ -114,20 +114,26 @@ Target just a role (e.g. re-run Docker install across all Docker-role hosts only
 ansible-playbook site.yml --tags docker
 ```
 
-### SSH access: keys must be pre-seeded, no password bootstrap
+### SSH access: connect as `{{ admin_user }}`, never root
 
-**As of this version, `PermitRootLogin no` and `PasswordAuthentication no` are both set — no user can SSH in with a password, on any node, ever.** This replaces the previous password-based first-run bootstrap (`root` + the node's default password → key-only root access afterward).
+**Root never accepts SSH connections at all** (`PermitRootLogin no`) — root access on a managed node is only ever obtained via `{{ admin_user }}` (`lorenzo`) + `sudo`/`become`, never a direct root login. This is why every play in `site.yml` uses `become: true`: Ansible connects as `{{ admin_user }}` and escalates to root per-task via passwordless sudo, rather than connecting as root directly.
 
-**Practical consequence:** a brand-new node must already have an SSH public key authorized *before* this playbook can reach it at all — Ansible/Semaphore has no password fallback to fall back on. Ways to pre-seed a key:
-- Bake the public key into the base OS image
-- Inject it via cloud-init `user-data` at first boot (most cloud/VM provisioning supports this)
-- Add it manually once over local console/physical access before handing the node to Ansible
+**Two-phase credential model, matching `inventory/hosts.ini`'s `ansible_user={{ admin_user }}`:**
 
-Once a node has a working authorized key for `root` (or `lorenzo`, before root access is locked down), normal runs proceed as usual:
+1. **First run on a brand-new node — username/password credential**
+   `{{ admin_user }}` must already exist on the node with a known password before Ansible can reach it at all (e.g. created during OS install/imaging — this playbook's own user-creation task can't help here, since Ansible needs to log in before it can run anything). Configure Semaphore's SSH credential as:
+   - **User:** `{{ admin_user }}`
+   - **Password:** the account's current password
+   This run adds `{{ admin_user }}`'s GitHub public key (`ansible.posix.authorized_key`, fetched from `https://github.com/<admin_github_user>.keys`), grants passwordless sudo, and then locks down `sshd` (`PermitRootLogin no`, `PasswordAuthentication no`).
+2. **Every run after that — private-key credential**
+   Once the key is installed and password auth is disabled, switch Semaphore's SSH credential for that node to:
+   - **User:** `{{ admin_user }}`
+   - **Private key:** the key matching the public key published at `https://github.com/<admin_github_user>.keys`
+   Root privilege for any task is obtained via `become`/`sudo`, not by SSHing in as root — which is no longer possible anyway.
 
-1. The playbook adds the public keys published by the configured `admin_github_user` to both `lorenzo` and `root` (`ansible.posix.authorized_key`, fetched from `https://github.com/<admin_github_user>.keys`).
-2. It then sets `PermitRootLogin no` and `PasswordAuthentication no`, validates `sshd_config`, and restarts `sshd`.
-3. Every run — first and subsequent — must authenticate with the **private key corresponding to the public key published by `admin_github_user`**.
+Switching Semaphore's credential from password to private key after the first run is a manual step done in Semaphore's credential configuration — this playbook doesn't (and can't) automate that switch itself, since it happens outside the SSH session the playbook runs in.
+
+No password or private key is committed to this repository.
 
 > **Important:** the private key used by Semaphore/Ansible must correspond to a public
 > key currently published at `https://github.com/<admin_github_user>.keys`.
@@ -400,11 +406,12 @@ ansible-playbook site.yml --limit node5 --list-tags          # shows which tags/
 
 ## Running from Semaphore UI
 
-Password-based bootstrap is no longer available (see "SSH access: keys must be pre-seeded" above) — Semaphore needs a single private-key credential that's already authorized on the node before it can run anything against it:
+Two credentials, matching the two-phase model in "SSH access" above:
 
-- **SSH credential:** User `root` (or `{{ admin_user }}`, before root access is locked down) + the private key matching the public key pre-seeded on the node
-- **Playbook:** `site.yml`
-- **Inventory:** `inventory/hosts.ini`
+- **Bootstrap credential (first run on a new node):** User `{{ admin_user }}` + password
+- **Normal credential (every run after):** User `{{ admin_user }}` + private key
+
+Root privilege for any task comes from `become`/`sudo` inside the playbook, not from which SSH credential is used — both credentials connect as `{{ admin_user }}`, never root.
 
 No password or private key is committed to this repository.
 

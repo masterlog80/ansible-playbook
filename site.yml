@@ -385,16 +385,6 @@
         state: present
       tags: [baseline, users]
 
-    # Install the same existing GitHub public key for root before SSH
-    # hardening. The first run can therefore connect with root/password;
-    # subsequent runs can connect with the matching private key.
-    - name: Add SSH public key from GitHub for root
-      ansible.posix.authorized_key:
-        user: root
-        key: "https://github.com/{{ admin_github_user }}.keys"
-        state: present
-      tags: [baseline, users, ssh]
-
     - name: Set root's shell to zsh
       ansible.builtin.user:
         name: root
@@ -445,17 +435,23 @@
     # -------------------------------------------------------------------------
     # 10. Disable root SSH login entirely + disable password authentication
     # -------------------------------------------------------------------------
-    # NOTE: this replaces the previous "prohibit-password" (key-only root
-    # login) approach. With PermitRootLogin=no, root cannot SSH in at all
-    # (neither by password nor by key), and with PasswordAuthentication=no,
-    # NO user can SSH in with a password on any node. This means the
-    # password-based first-run bootstrap this playbook previously relied on
-    # (root + the node's default password) no longer works for onboarding a
-    # brand-new node — its SSH public key(s) must be pre-seeded some other
-    # way (e.g. baked into the base image, injected via cloud-init/user-data,
-    # or added manually) before this playbook can reach it at all. Once a
-    # node already has an authorized key for {{ admin_user }} or root,
-    # normal Ansible runs are unaffected.
+    # Authentication model: Ansible connects as {{ admin_user }} (never
+    # root) via SSH. A brand-new node's first run uses a
+    # username/password credential for {{ admin_user }} — this requires
+    # {{ admin_user }} to already exist on the node with a known password
+    # before Ansible can reach it (e.g. created during OS install/imaging).
+    # That first run adds {{ admin_user }}'s GitHub public key (task
+    # above) and grants passwordless sudo (task above), so subsequent
+    # runs authenticate with that private key instead and use
+    # become/sudo — not a root SSH login — for anything needing root.
+    # Switching Semaphore's SSH credential from password to private key
+    # after the first run is expected/required and is done outside this
+    # playbook (in Semaphore's credential configuration).
+    #
+    # With PermitRootLogin=no, root can never SSH in at all — by design,
+    # since root access is only ever obtained via {{ admin_user }} + sudo.
+    # With PasswordAuthentication=no, no user (including {{ admin_user }})
+    # can SSH in with a password once this task has run — only the key.
     - name: Disable root SSH login entirely
       ansible.builtin.lineinfile:
         path: /etc/ssh/sshd_config
