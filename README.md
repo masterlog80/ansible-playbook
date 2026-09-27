@@ -37,8 +37,8 @@ To add a new role later (e.g. `monitoring_nodes`), add a new play at the bottom 
 - 🔌 **udev rules** – `/etc/udev/rules.d/90-qualcomm.rules` (GSM modem, auto-switches a Qualcomm USB stick out of storage mode via `usb_modeswitch`), `/etc/udev/rules.d/90-omron-ups.conf` (OMRON UPS — symlinks to `/dev/ups`, group `nut`), `/etc/udev/rules.d/99-ups.rules` (APC UPS — symlinks to `/dev/ups-network`)
 - 🔇 **Disable sysstat** – stops and masks the sysstat service
 - 👤 **User management** – deletes all regular non-root users, creates user `lorenzo` with passwordless sudo
-- 🔑 **SSH key import** – imports SSH public keys from GitHub account `masterlog80` for user `lorenzo`
-- 🔒 **Root hardening** – sets `PermitRootLogin no` in `sshd_config`
+- 🔑 **SSH key import** – imports SSH public keys from GitHub account `masterlog80` for both `lorenzo` and `root`
+- 🔒 **Root SSH bootstrap** – installs the root public key first, then sets `PermitRootLogin prohibit-password`, allowing the initial password-based bootstrap and key-only root access on subsequent runs
 - 🖥️ **Oh My Zsh** – installs Oh My Zsh + Powerlevel10k theme for **every user in `zsh_users`** (default: the admin user and `root`), with the plugin set: `kubectl`, `kubectx`, `kube-ps1`, `git`, `zsh-syntax-highlighting`, `zsh-autosuggestions`, `docker`, `docker-compose`, `colorize`, `last-working-dir`. `zsh-syntax-highlighting` and `zsh-autosuggestions` are cloned from their upstream repos (not bundled with Oh My Zsh); the rest ship with Oh My Zsh itself
 - 🔐 **Getty autologin** – configures automatic login as `lorenzo` on the local console
 - 🌐 **Static IP** – deploys a per-host Netplan configuration (defined in `host_vars/`)
@@ -59,7 +59,7 @@ ansible-galaxy collection install community.general ansible.posix
 
 **Managed hosts:**
 - Debian 11+ or Ubuntu 20.04+
-- SSH access with a user that has `sudo` rights
+- Initial SSH access as `root` using the device's default password. After the first successful run, use the matching private SSH key for subsequent runs.
 - Python 3 available at `/usr/bin/python3`
 
 ### Clone & run
@@ -73,9 +73,9 @@ Edit `inventory/hosts.ini` — add the host under `[nodes]`, then add it under w
 
 ```ini
 [nodes]
-node1  ansible_host=192.168.10.10  ansible_user=ubuntu
-node2  ansible_host=192.168.10.11  ansible_user=ubuntu
-node3  ansible_host=192.168.10.12  ansible_user=ubuntu
+node1  ansible_host=192.168.10.10  ansible_user=root
+node2  ansible_host=192.168.10.11  ansible_user=root
+node3  ansible_host=192.168.10.12  ansible_user=root
 
 [k3s_nodes]
 node1
@@ -110,6 +110,31 @@ Target just a role (e.g. re-run Docker install across all Docker-role hosts only
 ```bash
 ansible-playbook site.yml --tags docker
 ```
+
+### SSH bootstrap and subsequent key-based access
+
+The inventory connects to managed nodes as `root`. The first run is intentionally
+password-based so a fresh Orange Pi can be bootstrapped without an SSH key.
+
+1. In your Ansible/Semaphore credential, configure the initial SSH login as:
+   - **User:** `root`
+   - **Password:** the node's default password
+2. Run `site.yml` once. Before SSH hardening, the playbook adds the public keys
+   published by the configured `admin_github_user` to both `lorenzo` and `root`.
+3. The playbook then changes root SSH access to:
+   `PermitRootLogin prohibit-password`
+   and validates `sshd_config` before restarting SSH.
+4. For every subsequent run, use the **private key corresponding to the
+   public key published by `admin_github_user`** instead of the password.
+
+The password is deliberately **not stored in the repository**. In Semaphore,
+use one credential for the one-time bootstrap run and your existing private-key
+credential for normal runs.
+
+> **Important:** the private key used by Semaphore must correspond to a public
+> key currently published at `https://github.com/<admin_github_user>.keys`.
+> If your existing private key is not the one published on GitHub, the
+> `authorized_key` task must instead be changed to use that exact public key.
 
 ### Uninstall / rollback
 
@@ -154,7 +179,7 @@ The playbook is not destructive by default, but to undo specific tasks you can r
 | `dns_servers` | `192.168.10.3`, `192.168.10.4`, `1.1.1.1` | DNS servers for `systemd-resolved` |
 | `dns_search_domain` | `salvetti.info` | DNS search domain |
 | `admin_user` | `lorenzo` | Name of the admin user to create |
-| `admin_github_user` | `masterlog80` | GitHub username from which SSH public keys are imported |
+| `admin_github_user` | `masterlog80` | GitHub username from which SSH public keys are imported for `lorenzo` and `root` |
 | `zsh_users` | `{{ admin_user }}` + `root` (name + home dir pairs) | Users who get zsh/Oh My Zsh/Powerlevel10k/plugins. Add an entry (`name`, `home`) to extend it to another user |
 | `zsh_plugins` | see file — `kubectl`, `kubectx`, `kube-ps1`, `git`, `zsh-syntax-highlighting`, `zsh-autosuggestions`, `docker`, `docker-compose`, `colorize`, `last-working-dir` | Oh My Zsh plugins enabled in every `zsh_users` member's `.zshrc` |
 | `zsh_external_plugins` | `zsh-syntax-highlighting`, `zsh-autosuggestions` (name + repo pairs) | Plugins not bundled with Oh My Zsh, cloned from their upstream repo instead |
@@ -359,6 +384,22 @@ ansible-playbook site.yml --limit node5 --list-tags          # shows which tags/
 ```
 
 ---
+
+## Running from Semaphore UI
+
+The SSH bootstrap is designed for Semaphore as a two-credential workflow:
+
+1. **Bootstrap template — run once per fresh node**
+   - Playbook: `site.yml`
+   - Inventory: `inventory/hosts.ini`
+   - SSH credential: **User `root` + the node's default password**
+2. **Normal template — use after bootstrap**
+   - Playbook: `site.yml`
+   - Inventory: `inventory/hosts.ini`
+   - SSH credential: **User `root` + your existing private SSH key**
+
+No password or private key is committed to this repository. The first run installs
+the public key and hardens root SSH access; later runs use the private key.
 
 ## Running from Semaphore UI
 
