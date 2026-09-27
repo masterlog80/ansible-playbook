@@ -40,7 +40,7 @@ To add a new role later (e.g. `monitoring_nodes`), add a new play at the bottom 
 - 🔇 **Disable unwanted services** – stops and masks `sysstat` (and clears `/var/log/sysstat/*`) and `nvmf-autoconnect`
 - 👤 **User management** – deletes all regular non-root users other than the admin user, creates user `lorenzo` with passwordless sudo
 - 🔑 **SSH key import** – imports the SSH public key from GitHub account `masterlog80` for `lorenzo` (not root — root never accepts SSH connections, see below)
-- 🔒 **SSH lockdown** – `PermitRootLogin no` (root never accepts SSH connections — root access is only ever obtained via `{{ admin_user }}` + `sudo`/`become`) and `PasswordAuthentication no` (no password SSH login for any user once the first-run key is installed). See "SSH access" below for the two-phase credential model
+- 🔒 **SSH lockdown** – `PermitRootLogin no` (root never accepts SSH connections — root access is only ever obtained via `{{ admin_user }}` + `sudo`/`become`), `PasswordAuthentication no`, `KbdInteractiveAuthentication no` + `ChallengeResponseAuthentication no` (closes the PAM keyboard-interactive gap password-auth-no alone leaves open), `PermitEmptyPasswords no`, `PubkeyAuthentication yes` (explicit), and `AllowUsers {{ admin_user }}` (defense in depth — SSH logins restricted to just this user). See "SSH access" below for the two-phase credential model
 - 🔓 **sshd MaxAuthTries for `lorenzo`** – raises `MaxAuthTries` to 20 for that user only, to avoid sshd dropping the connection with "Too many authentication failures" before it reaches a valid key/password (common when an SSH agent offers many keys)
 - 🖥️ **Oh My Zsh** – installs Oh My Zsh + Powerlevel10k theme for **every user in `zsh_users`** (default: the admin user and `root`), with the plugin set: `kubectl`, `kubectx`, `kube-ps1`, `git`, `zsh-syntax-highlighting`, `zsh-autosuggestions`, `docker`, `docker-compose`, `colorize`, `last-working-dir`. `zsh-syntax-highlighting` and `zsh-autosuggestions` are cloned from their upstream repos (not bundled with Oh My Zsh); the rest ship with Oh My Zsh itself
 - 🔐 **Getty autologin** – configures automatic login as `lorenzo` on the local console
@@ -117,6 +117,16 @@ ansible-playbook site.yml --tags docker
 ### SSH access: connect as `{{ admin_user }}`, never root
 
 **Root never accepts SSH connections at all** (`PermitRootLogin no`) — root access on a managed node is only ever obtained via `{{ admin_user }}` (`lorenzo`) + `sudo`/`become`, never a direct root login. This is why every play in `site.yml` uses `become: true`: Ansible connects as `{{ admin_user }}` and escalates to root per-task via passwordless sudo, rather than connecting as root directly.
+
+**Companion hardening beyond the two headline settings** (`PermitRootLogin no` + `PasswordAuthentication no`), closing gaps those two leave open on their own:
+
+| Setting | Value | Why |
+|---------|-------|-----|
+| `KbdInteractiveAuthentication` | `no` | `PasswordAuthentication no` alone doesn't block PAM-driven keyboard-interactive prompts, which can still accept a password through a different code path |
+| `ChallengeResponseAuthentication` | `no` | Legacy alias for the same setting, kept for older OpenSSH versions that don't recognize `KbdInteractiveAuthentication` |
+| `PermitEmptyPasswords` | `no` | Blocks login for any account with no password set |
+| `PubkeyAuthentication` | `yes` | Explicit, so it can't be silently disabled elsewhere |
+| `AllowUsers` | `{{ admin_user }}` | Defense in depth — SSH logins restricted to just this user, even though non-admin users are already deleted and root can't log in at all |
 
 > **Supersedes `bootstrap.yml`:** an earlier revision of this repo added a separate `bootstrap.yml` for a one-time root+password run that installed a standing root SSH key (`PermitRootLogin prohibit-password`). Under the model below, root never accepts an SSH connection at all, so a permanent root key serves no purpose — `bootstrap.yml` is no longer part of the onboarding flow. It's left in the repo for now; delete it (or repurpose it for `{{ admin_user }}`) once you've confirmed you don't need it.
 

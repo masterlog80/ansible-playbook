@@ -478,6 +478,72 @@
       notify: Restart sshd
       tags: [baseline, ssh]
 
+    # The four tasks below close the common gaps left by PermitRootLogin=no
+    # + PasswordAuthentication=no alone (industry-standard companions to
+    # that pair — see e.g. the Mozilla OpenSSH guidelines / CIS Benchmarks):
+    - name: Ensure public-key authentication is enabled
+      ansible.builtin.lineinfile:
+        path: /etc/ssh/sshd_config
+        regexp: '^#?PubkeyAuthentication'
+        line: "PubkeyAuthentication yes"
+        state: present
+        validate: "/usr/sbin/sshd -t -f %s"
+      notify: Restart sshd
+      tags: [baseline, ssh]
+
+    # PasswordAuthentication=no does NOT by itself block PAM-driven
+    # keyboard-interactive prompts, which on some systems still allow a
+    # password to be entered through a different code path. This closes
+    # that gap. ChallengeResponseAuthentication is the older/deprecated
+    # name for the same setting, kept here too for OpenSSH versions where
+    # KbdInteractiveAuthentication isn't recognized.
+    - name: Disable keyboard-interactive authentication
+      ansible.builtin.lineinfile:
+        path: /etc/ssh/sshd_config
+        regexp: '^#?KbdInteractiveAuthentication'
+        line: "KbdInteractiveAuthentication no"
+        state: present
+        validate: "/usr/sbin/sshd -t -f %s"
+      notify: Restart sshd
+      tags: [baseline, ssh]
+
+    - name: Disable challenge-response authentication (legacy alias)
+      ansible.builtin.lineinfile:
+        path: /etc/ssh/sshd_config
+        regexp: '^#?ChallengeResponseAuthentication'
+        line: "ChallengeResponseAuthentication no"
+        state: present
+        validate: "/usr/sbin/sshd -t -f %s"
+      notify: Restart sshd
+      tags: [baseline, ssh]
+
+    - name: Disable empty-password logins
+      ansible.builtin.lineinfile:
+        path: /etc/ssh/sshd_config
+        regexp: '^#?PermitEmptyPasswords'
+        line: "PermitEmptyPasswords no"
+        state: present
+        validate: "/usr/sbin/sshd -t -f %s"
+      notify: Restart sshd
+      tags: [baseline, ssh]
+
+    # Defense in depth: even though non-admin users are deleted (task
+    # above) and root can't SSH in at all, explicitly restrict SSH logins
+    # to {{ admin_user }} only. insertafter anchors this to a directive
+    # that's guaranteed to already exist above the MaxAuthTries "Match
+    # User" block further down, so this stays a global (not Match-scoped)
+    # directive regardless of run order.
+    - name: Restrict SSH logins to {{ admin_user }} only
+      ansible.builtin.lineinfile:
+        path: /etc/ssh/sshd_config
+        regexp: '^AllowUsers'
+        line: "AllowUsers {{ admin_user }}"
+        insertafter: '^PasswordAuthentication'
+        state: present
+        validate: "/usr/sbin/sshd -t -f %s"
+      notify: Restart sshd
+      tags: [baseline, ssh]
+
     # -------------------------------------------------------------------------
     # 10b. Raise MaxAuthTries for {{ admin_user }} — avoids sshd dropping the
     #      connection with "Too many authentication failures" before it ever
