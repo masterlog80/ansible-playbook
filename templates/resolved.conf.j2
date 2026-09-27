@@ -3,3 +3,7 @@
 [Resolve]
 DNS={{ dns_servers | join(' ') }}
 Domains={{ dns_search_domain }}
+# Frees up port 53 so dnsmasq (or any other local DNS server) can bind to it
+# without conflicting with systemd-resolved's own stub listener.
+# See: https://www.baeldung.com/linux/dnsmasq-systemd-resolved-conflicts
+DNSStubListener=no
