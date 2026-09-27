@@ -452,6 +452,12 @@
     # since root access is only ever obtained via {{ admin_user }} + sudo.
     # With PasswordAuthentication=no, no user (including {{ admin_user }})
     # can SSH in with a password once this task has run — only the key.
+    #
+    # Supersedes bootstrap.yml's approach (PermitRootLogin
+    # prohibit-password + a standing root SSH key): under this model root
+    # never accepts an SSH connection at all, so a permanent root key is
+    # unnecessary and bootstrap.yml's job is obsolete. See the note in
+    # README's "SSH access" section.
     - name: Disable root SSH login entirely
       ansible.builtin.lineinfile:
         path: /etc/ssh/sshd_config
