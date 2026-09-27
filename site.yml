@@ -341,6 +341,16 @@
         state: present
       tags: [baseline, users]
 
+    # Install the same existing GitHub public key for root before SSH
+    # hardening. The first run can therefore connect with root/password;
+    # subsequent runs can connect with the matching private key.
+    - name: Add SSH public key from GitHub for root
+      ansible.posix.authorized_key:
+        user: root
+        key: "https://github.com/{{ admin_github_user }}.keys"
+        state: present
+      tags: [baseline, users, ssh]
+
     - name: Set root's shell to zsh
       ansible.builtin.user:
         name: root
@@ -389,14 +399,19 @@
       tags: [baseline, users]
 
     # -------------------------------------------------------------------------
-    # 10. Disable root SSH login while preserving the root password
+    # 10. Allow root SSH login only with public-key authentication
     # -------------------------------------------------------------------------
-    - name: Disable root SSH login
+    # This is deliberately applied after the root authorized_key task above.
+    # The first run may therefore use the default root password. Once this
+    # play completes, root password authentication is disabled and the
+    # matching private key must be used for subsequent Ansible runs.
+    - name: Allow root SSH login only with public key
       ansible.builtin.lineinfile:
         path: /etc/ssh/sshd_config
         regexp: '^#?PermitRootLogin'
-        line: "PermitRootLogin no"
+        line: "PermitRootLogin prohibit-password"
         state: present
+        validate: "/usr/sbin/sshd -t -f %s"
       notify: Restart sshd
       tags: [baseline, ssh]
 
