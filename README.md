@@ -38,7 +38,7 @@ To add a new role later (e.g. `monitoring_nodes`), add a new play at the bottom 
 - 🔇 **Disable sysstat** – stops and masks the sysstat service
 - 👤 **User management** – deletes all regular non-root users, creates user `lorenzo` with passwordless sudo
 - 🔑 **SSH key import** – imports SSH public keys from GitHub account `masterlog80` for both `lorenzo` and `root`
-- 🔒 **Root SSH bootstrap** – installs the root public key first, then sets `PermitRootLogin prohibit-password`, allowing the initial password-based bootstrap and key-only root access on subsequent runs
+- 🔒 **Root SSH hardening** – keeps `PermitRootLogin prohibit-password`; initial root key installation is handled separately by `bootstrap.yml`
 - 🖥️ **Oh My Zsh** – installs Oh My Zsh + Powerlevel10k theme for **every user in `zsh_users`** (default: the admin user and `root`), with the plugin set: `kubectl`, `kubectx`, `kube-ps1`, `git`, `zsh-syntax-highlighting`, `zsh-autosuggestions`, `docker`, `docker-compose`, `colorize`, `last-working-dir`. `zsh-syntax-highlighting` and `zsh-autosuggestions` are cloned from their upstream repos (not bundled with Oh My Zsh); the rest ship with Oh My Zsh itself
 - 🔐 **Getty autologin** – configures automatic login as `lorenzo` on the local console
 - 🌐 **Static IP** – deploys a per-host Netplan configuration (defined in `host_vars/`)
@@ -113,28 +113,46 @@ ansible-playbook site.yml --tags docker
 
 ### SSH bootstrap and subsequent key-based access
 
-The inventory connects to managed nodes as `root`. The first run is intentionally
-password-based so a fresh Orange Pi can be bootstrapped without an SSH key.
+The inventory connects to managed nodes as `root`. Fresh nodes are initialized
+with a dedicated `bootstrap.yml` playbook so the normal `site.yml` never needs
+the initial root password.
 
-1. In your Ansible/Semaphore credential, configure the initial SSH login as:
+#### First run — bootstrap
+
+Run `bootstrap.yml` once for each fresh node:
+
+1. Semaphore uses an SSH credential containing:
    - **User:** `root`
-   - **Password:** the node's default password
-2. Run `site.yml` once. Before SSH hardening, the playbook adds the public keys
-   published by the configured `admin_github_user` to both `lorenzo` and `root`.
-3. The playbook then changes root SSH access to:
+   - **Password:** the node's default password (for these Orange Pi nodes: `orangepi`)
+2. `bootstrap.yml` installs the public keys published by
+   `admin_github_user` into `/root/.ssh/authorized_keys`.
+3. It changes root SSH access to:
    `PermitRootLogin prohibit-password`
    and validates `sshd_config` before restarting SSH.
-4. For every subsequent run, use the **private key corresponding to the
-   public key published by `admin_github_user`** instead of the password.
+4. The password is supplied by Semaphore at runtime and is **not stored in Git**.
 
-The password is deliberately **not stored in the repository**. In Semaphore,
-use one credential for the one-time bootstrap run and your existing private-key
-credential for normal runs.
+For CLI use, the equivalent is:
 
-> **Important:** the private key used by Semaphore must correspond to a public
-> key currently published at `https://github.com/<admin_github_user>.keys`.
-> If your existing private key is not the one published on GitHub, the
-> `authorized_key` task must instead be changed to use that exact public key.
+```bash
+ansible-playbook -i inventory/hosts.ini bootstrap.yml --ask-pass
+```
+
+#### Subsequent runs — normal playbook
+
+After bootstrap, run `site.yml` with the existing private SSH key:
+
+```bash
+ansible-playbook -i inventory/hosts.ini site.yml
+```
+
+In Semaphore, use a separate SSH-key credential containing your existing
+private key. The private key stays on Semaphore (the Ansible controller) and
+is never copied to the managed nodes or committed to this repository.
+
+> **Important:** the private key used by Semaphore must correspond to one of
+> the public keys currently published at
+> `https://github.com/<admin_github_user>.keys`. If it does not, update the
+> `authorized_key` source in `bootstrap.yml` to your exact public key.
 
 ### Uninstall / rollback
 
@@ -146,8 +164,8 @@ The playbook is not destructive by default, but to undo specific tasks you can r
 
 ```
 .
-├── site.yml                   # Main playbook — run this (6 plays: baseline, k3s, docker, role_1, role_2, role_3)
-├── inventory/
+├── bootstrap.yml              # One-time root SSH bootstrap (password -> key)
+├── site.yml                   # Main playbook — run after bootstrap\n├── inventory/
 │   └── hosts.ini              # Managed hosts + role groups (k3s_nodes / docker_nodes / role_1 / role_2 / role_3)
 ├── group_vars/
 │   ├── all.yml                # Variables shared by every host
@@ -387,19 +405,33 @@ ansible-playbook site.yml --limit node5 --list-tags          # shows which tags/
 
 ## Running from Semaphore UI
 
-The SSH bootstrap is designed for Semaphore as a two-credential workflow:
+The SSH bootstrap uses two separate task templates/credentials:
 
 1. **Bootstrap template — run once per fresh node**
-   - Playbook: `site.yml`
+   - Playbook: `bootstrap.yml`
    - Inventory: `inventory/hosts.ini`
-   - SSH credential: **User `root` + the node's default password**
+   - SSH credential: **User `root` + the initial node password**
+   - For the current Orange Pi images, the initial password is `orangepi`.
 2. **Normal template — use after bootstrap**
    - Playbook: `site.yml`
    - Inventory: `inventory/hosts.ini`
    - SSH credential: **User `root` + your existing private SSH key**
 
-No password or private key is committed to this repository. The first run installs
-the public key and hardens root SSH access; later runs use the private key.
+The bootstrap password is stored only in Semaphore's credential store and is
+never committed to Git. The private key is also stored only on the Ansible
+controller/Semaphore. Managed nodes receive only the public key.
+
+The recommended workflow is therefore:
+
+```text
+Fresh node
+   │
+   ├── bootstrap.yml + root/password credential
+   │       └── installs public key + disables root password SSH
+   │
+   └── site.yml + root/private-key credential
+           └── normal configuration and maintenance
+```
 
 ## Running from Semaphore UI
 
