@@ -1,0 +1,42 @@
+---
+# =============================================================================
+# EXAMPLE ONLY — copy to group_vars/all/vault.yml, fill in real values, then
+# encrypt it:
+#
+#   cp group_vars/all/vault.yml.example group_vars/all/vault.yml
+#   $EDITOR group_vars/all/vault.yml
+#   ansible-vault encrypt group_vars/all/vault.yml
+#
+# group_vars/all/vault.yml is git-ignored (see .gitignore) and must never be
+# committed unencrypted. In Semaphore, either mount the encrypted file plus its
+# vault password, or define these same variables as secret variables in a
+# Variable Group instead.
+# =============================================================================
+
+# Password HASHES (never plaintext) for local password authentication.
+# Generate a hash with either:
+#   openssl passwd -6 'the-password'
+#   mkpasswd --method=sha-512 'the-password'     (package "whois" on Debian/Ubuntu)
+# Paste the resulting "$6$..." string here, single-quoted.
+
+# Password for the built-in "root" account. It also becomes the password sudo
+# asks for (see "rootpw" in site.yml), so it must be a strong, unique value.
+root_password_hash: '$6$REPLACE_ME'
+
+# Password for the admin user (lorenzo), used for local/physical console login.
+# SSH stays key-only regardless of this value.
+admin_user_password_hash: '$6$REPLACE_ME'
+
+# The PLAINTEXT root password must ALSO be supplied to Ansible at runtime as
+# ansible_become_password, because sudo now asks for root's password (there is
+# no passwordless sudo anymore). Supply it however your tool prefers:
+#   - CLI:       ansible-playbook site.yml --ask-become-pass
+#   - Semaphore: the "Become password" field of the SSH credential
+#   - Vault:     uncomment below (encrypted file only!)
+# ansible_become_password: 'the-plaintext-root-password'
+
+# OPTIONAL — extra SSH public keys (literal "ssh-ed25519 AAAA... comment" lines)
+# installed for the admin user in addition to the GitHub-published key. Gives
+# you a way in if github.com is unreachable when the playbook runs.
+# additional_authorized_keys:
+#   - "ssh-ed25519 AAAA... backup-key"

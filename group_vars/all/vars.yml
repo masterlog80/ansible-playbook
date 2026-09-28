@@ -35,6 +35,7 @@ packages:
   - avahi-utils
   - libnss-mdns
   - zsh
+  - sudo
   - open-iscsi
   - gpg
   - apt-transport-https
@@ -76,6 +77,16 @@ ntp_fallback: ntp.ubuntu.com
 admin_user: lorenzo
 admin_github_user: masterlog80
 
+# Extra literal SSH public keys installed for admin_user in addition to the
+# GitHub-published ones. Optional; lets a run still succeed in adding a way in
+# when github.com is unreachable. Override in the vault file / a Variable Group.
+additional_authorized_keys: []
+
+# NOTE: root_password_hash and admin_user_password_hash (required — see the
+# assert at the top of the user-management section in site.yml) are
+# deliberately NOT defined here: they are secrets and live in the encrypted
+# group_vars/all/vault.yml. See group_vars/all/vault.yml.example.
+
 # ---------------------------------------------------------------------------
 # Zsh / Oh My Zsh
 # ---------------------------------------------------------------------------
@@ -107,11 +118,19 @@ zsh_plugins:
 
 # External (not bundled with Oh My Zsh) plugins to clone into
 # <home>/.oh-my-zsh/custom/plugins/<name>. Must be a subset of zsh_plugins.
+# Pinned to release tags for reproducible installs (and so an upstream change
+# can't silently alter what gets installed on a fresh node). Existing clones
+# are left alone (update: false); bump these deliberately to upgrade.
 zsh_external_plugins:
   - name: zsh-syntax-highlighting
     repo: https://github.com/zsh-users/zsh-syntax-highlighting.git
+    version: "0.8.0"
   - name: zsh-autosuggestions
     repo: https://github.com/zsh-users/zsh-autosuggestions.git
+    version: "v0.7.1"
+
+# Powerlevel10k theme release tag (same pinning rationale as above).
+powerlevel10k_version: "v1.20.0"
 
 # ---------------------------------------------------------------------------
 # Node role
