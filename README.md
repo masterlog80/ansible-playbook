@@ -12,13 +12,13 @@ One playbook (`site.yml`), seven plays:
 
 | Play | Runs on | What it does |
 |------|---------|---------------|
-| `System bootstrap (common baseline)` | `hosts: all` | Updates, packages (with `apt --fix-broken` before/after), swap, timezone, NTP, DNS, udev rules (GSM modem, UPS OMRON, UPS APC), disabling sysstat/nvmf-autoconnect, users, SSH hardening, zsh, autologin, static IP, hostname — every managed node gets this |
+| `System bootstrap (common baseline)` | `hosts: all` | Updates, packages (with `apt --fix-broken` before/after), swap, timezone, NTP, DNS, udev rules (GSM modem, UPS OMRON, UPS APC), disabling sysstat/nvmf-autoconnect, users, SSH hardening, zsh, console password login, static IP, hostname — every managed node gets this |
 | `K3S role` | `hosts: k3s_nodes` | Installs K3S — only on hosts in the `[k3s_nodes]` inventory group |
 | `Docker role` | `hosts: docker_nodes` | Installs Docker Engine + Compose plugin — only on hosts in the `[docker_nodes]` inventory group |
 | `K3S control-plane (master) role` | `hosts: k3s_master` | Installs K3S with control-plane flags, taints the node, installs FluxCD + Helm — only on hosts in the `[k3s_master]` inventory group |
-| `role_1` | `hosts: role_1` | Placeholder role — only on hosts in the `[role_1]` inventory group |
-| `role_2` | `hosts: role_2` | Placeholder role — only on hosts in the `[role_2]` inventory group |
-| `role_3` | `hosts: role_3` | Placeholder role — only on hosts in the `[role_3]` inventory group |
+| `Placeholder role_1` | `hosts: role_1` | Placeholder role — only on hosts in the `[role_1]` inventory group |
+| `Placeholder role_2` | `hosts: role_2` | Placeholder role — only on hosts in the `[role_2]` inventory group |
+| `Placeholder role_3` | `hosts: role_3` | Placeholder role — only on hosts in the `[role_3]` inventory group |
 
 `role_1` / `role_2` / `role_3` are scaffolding — each currently runs a single `debug` task so the pattern is provable end-to-end. Replace the placeholder task in each play with real work (and rename the group/tag/`group_vars` file to something meaningful) once you know what that role should actually do.
 
@@ -31,21 +31,21 @@ To add a new role later (e.g. `monitoring_nodes`), add a new play at the bottom 
 ## Features
 
 - 🔄 **System update** – `apt update` + dist-upgrade on every run
-- 📦 **Package installation** – curated package set from `group_vars/all.yml`, wrapped in `apt --fix-broken` (before and after) in case any packages are left in a broken state
+- 📦 **Package installation** – curated package set from `group_vars/all/vars.yml`, wrapped in `apt --fix-broken` (before and after) in case any packages are left in a broken state
 - 💾 **Disable swap** – required for K3S, applied to every node regardless of role
 - ☸️ **K3S** (`k3s_nodes` group) – downloads and runs the official K3S install script; version and extra flags configurable via `group_vars/k3s_nodes.yml`
 - ☸️ **K3S control-plane** (`k3s_master` group) – installs K3S with `--disable traefik --disable servicelb --disable metrics-server`, taints the node `node-role.kubernetes.io/control-plane=:NoSchedule`, persists `KUBECONFIG=/etc/rancher/k3s/k3s.yaml` in `/etc/environment`, and installs FluxCD + Helm
-- 🐳 **Docker** (`docker_nodes` group) – adds Docker's official apt repo + GPG key, installs `docker-ce`, `docker-ce-cli`, `containerd.io`, `docker-buildx-plugin`, `docker-compose-plugin`, and adds the admin user to the `docker` group
+- 🐳 **Docker** (`docker_nodes` group) – adds Docker's official apt repo + GPG key (the `ubuntu` or `debian` repo path is selected automatically from the host's distribution, written as a modern deb822 `docker.sources` file), installs `docker-ce`, `docker-ce-cli`, `containerd.io`, `docker-buildx-plugin`, `docker-compose-plugin`, and adds the admin user to the `docker` group
 - 🕐 **Timezone** – sets the system clock to `Asia/Tokyo`
 - 🌐 **DNS & Domain** – configures `systemd-resolved` with custom DNS servers and search domain `salvetti.info`, disables the DNS stub listener (frees port 53 for a local DNS server like dnsmasq — see [Baeldung](https://www.baeldung.com/linux/dnsmasq-systemd-resolved-conflicts)), and repoints `/etc/resolv.conf` at systemd-resolved's non-stub `resolv.conf` so resolution doesn't break once the stub listener is off
 - 🔌 **udev rules** – `/etc/udev/rules.d/90-qualcomm.rules` (GSM modem, auto-switches a Qualcomm USB stick out of storage mode via `usb_modeswitch`), `/etc/udev/rules.d/90-omron-ups.conf` (OMRON UPS — symlinks to `/dev/ups`, group `nut`), `/etc/udev/rules.d/99-ups.rules` (APC UPS — symlinks to `/dev/ups-network`)
 - 🔇 **Disable unwanted services** – stops and masks `sysstat` (and clears `/var/log/sysstat/*`) and `nvmf-autoconnect`
-- 👤 **User management** – deletes all regular non-root users other than the admin user, creates user `lorenzo` with passwordless sudo
+- 👤 **User management** – deletes all regular non-root users other than the admin user, creates user `lorenzo` with a local-console password, sets a known password for `root`, and grants `lorenzo` sudo that authenticates with the **root** password (`Defaults rootpw`) — no passwordless sudo
 - 🔑 **SSH key import** – imports the SSH public key from GitHub account `masterlog80` for `lorenzo` (not root — root's only SSH access is the one-time password-based bootstrap run, see below)
 - 🔒 **SSH lockdown** – `PermitRootLogin no` (root's only SSH access is the one-time bootstrap run; after that, root access is only ever obtained via `{{ admin_user }}` + `sudo`/`become`), `PasswordAuthentication no`, `KbdInteractiveAuthentication no` + `ChallengeResponseAuthentication no` (closes the PAM keyboard-interactive gap password-auth-no alone leaves open), `PermitEmptyPasswords no`, `PubkeyAuthentication yes` (explicit), and `AllowUsers {{ admin_user }}` (defense in depth — SSH logins restricted to just this user). See "SSH access" below for the two-phase credential model
 - 🔓 **sshd MaxAuthTries for `lorenzo`** – raises `MaxAuthTries` to 20 for that user only, to avoid sshd dropping the connection with "Too many authentication failures" before it reaches a valid key/password (common when an SSH agent offers many keys)
 - 🖥️ **Oh My Zsh** – installs Oh My Zsh + Powerlevel10k theme for **every user in `zsh_users`** (default: the admin user and `root`), with the plugin set: `kubectl`, `kubectx`, `kube-ps1`, `git`, `zsh-syntax-highlighting`, `zsh-autosuggestions`, `docker`, `docker-compose`, `colorize`, `last-working-dir`. `zsh-syntax-highlighting` and `zsh-autosuggestions` are cloned from their upstream repos (not bundled with Oh My Zsh); the rest ship with Oh My Zsh itself
-- 🔐 **Getty autologin** – configures automatic login as `lorenzo` on the local console
+- 🔐 **Console login** – removes any getty autologin override so the physical console shows a normal `login:`/`Password:` prompt (checked against `lorenzo`'s password hash) instead of dropping straight into a shell. SSH remains key-only
 - 🌐 **Static IP** – deploys a per-host Netplan configuration (defined in `host_vars/`)
 - 🏷️ **Hostname** – sets the system hostname per host
 
@@ -59,7 +59,7 @@ To add a new role later (e.g. `monitoring_nodes`), add a new play at the bottom 
 
 ```bash
 pip install ansible
-ansible-galaxy collection install community.general ansible.posix
+ansible-galaxy collection install -r requirements.yml   # community.general + ansible.posix
 ```
 
 **Managed hosts:**
@@ -118,7 +118,7 @@ ansible-playbook site.yml --tags docker
 
 ### SSH access: `root` bootstraps once, then `{{ admin_user }}` + sudo
 
-**Root never accepts SSH connections after the bootstrap run** (`PermitRootLogin no`) — from then on, root access on a managed node is only ever obtained via `{{ admin_user }}` (`lorenzo`) + `sudo`/`become`, never a direct root login. This is why every play in `site.yml` uses `become: true`: on every run after bootstrap, Ansible connects as `{{ admin_user }}` and escalates to root per-task via passwordless sudo, rather than connecting as root directly.
+**Root never accepts SSH connections after the bootstrap run** (`PermitRootLogin no`) — from then on, root access on a managed node is only ever obtained via `{{ admin_user }}` (`lorenzo`) + `sudo`/`become`, never a direct root login. This is why every play in `site.yml` uses `become: true`: on every run after bootstrap, Ansible connects as `{{ admin_user }}` and escalates to root per-task via `sudo`, which authenticates with the **root password** (see "Secrets" below) — there is no passwordless sudo — rather than connecting as root directly.
 
 **Companion hardening beyond the two headline settings** (`PermitRootLogin no` + `PasswordAuthentication no`), closing gaps those two leave open on their own:
 
@@ -130,15 +130,13 @@ ansible-playbook site.yml --tags docker
 | `PubkeyAuthentication` | `yes` | Explicit, so it can't be silently disabled elsewhere |
 | `AllowUsers` | `{{ admin_user }}` | Defense in depth — SSH logins restricted to just this user, even though non-admin users are already deleted and root can't log in at all |
 
-> **Supersedes `bootstrap.yml`:** an earlier revision of this repo added a separate `bootstrap.yml` for a one-time root+password run that installed a standing root SSH key (`PermitRootLogin prohibit-password`). Under the model below, root never accepts an SSH connection at all, so a permanent root key serves no purpose — `bootstrap.yml` is no longer part of the onboarding flow. It's left in the repo for now; delete it (or repurpose it for `{{ admin_user }}`) once you've confirmed you don't need it.
-
 **Two-phase credential model, matching `inventory/hosts.ini`'s `ansible_user={{ admin_user }}`:**
 
 1. **First run on a brand-new node — `root` + the node's built-in default password**
    A truly fresh node only has a known credential for `root` (the OS/image's default password) — it doesn't yet have `{{ admin_user }}` at all, so there's no `{{ admin_user }}` password to connect with. Configure Semaphore's SSH credential for this one-time run as:
    - **User:** `root`
    - **Password:** the node's built-in default password
-   Since the connection is already root, `become: true` is effectively a no-op for this run (Ansible skips the sudo wrapper when you're already the target user). This run creates `{{ admin_user }}`, adds its GitHub public key (`ansible.posix.authorized_key`, fetched from `https://github.com/<admin_github_user>.keys`), grants it passwordless sudo, and then locks down `sshd` for good — including `PermitRootLogin no`, which means this is also the **last** run that can ever connect as `root` over SSH.
+   Since the connection is already root, `become: true` needs no password for this run (`sudo` never asks root for one). This run creates `{{ admin_user }}`, adds its GitHub public key (`ansible.posix.authorized_key`, fetched from `https://github.com/<admin_github_user>.keys`), sets the `root` and `{{ admin_user }}` passwords from the vault, grants `{{ admin_user }}` sudo (root-password authenticated), and then locks down `sshd` for good — including `PermitRootLogin no`, which means this is also the **last** run that can ever connect as `root` over SSH.
 2. **Every run after that — `{{ admin_user }}` + private-key credential**
    Switch Semaphore's SSH credential for that node to:
    - **User:** `{{ admin_user }}`
@@ -154,6 +152,40 @@ No password or private key is committed to this repository.
 > If your existing private key is not the one published on GitHub, the
 > `authorized_key` task must instead be changed to use that exact public key.
 
+### Secrets: password hashes and the sudo ("become") password
+
+Three passwords are involved, and none of them are stored in plaintext in this repository:
+
+| What | Where it lives | Used for |
+|------|----------------|----------|
+| `root_password_hash` | encrypted `group_vars/all/vault.yml` | Sets `root`'s password on the node (`Set root password` task) |
+| `admin_user_password_hash` | encrypted `group_vars/all/vault.yml` | Sets `{{ admin_user }}`'s password — used **only** for local/physical console login. SSH stays key-only |
+| `ansible_become_password` (**plaintext** root password) | Semaphore's "Become password" field, `--ask-become-pass`, or the same vault file | Lets Ansible run `sudo` as `{{ admin_user }}` on every run after bootstrap |
+
+**Why the plaintext is needed at runtime:** `{{ admin_user }}`'s sudo rule is `ALL=(ALL) ALL` plus `Defaults:{{ admin_user }} rootpw` — sudo asks for the **root** password, not the user's own, and there is no `NOPASSWD`. Whatever runs Ansible therefore has to hold that password. That is a deliberate trade-off versus passwordless sudo: the automation platform now guards two secrets (the SSH private key *and* the root password) instead of one, but nobody who reaches a shell as `{{ admin_user }}` — including someone at the physical console — gets root without knowing the root password.
+
+**One-time setup:**
+
+```bash
+# 1. Generate crypt hashes from the passwords you chose
+openssl passwd -6 'the-root-password'        # -> $6$...  (or: mkpasswd --method=sha-512 ...)
+openssl passwd -6 'the-lorenzo-console-password'
+
+# 2. Create the vault file from the template and paste the hashes in
+cp group_vars/all/vault.yml.example group_vars/all/vault.yml
+$EDITOR group_vars/all/vault.yml
+
+# 3. Encrypt it (group_vars/all/vault.yml is git-ignored — only the .example is tracked)
+ansible-vault encrypt group_vars/all/vault.yml
+
+# 4. Run, supplying the vault password and (after bootstrap) the sudo password
+ansible-playbook site.yml --ask-vault-pass --ask-become-pass
+```
+
+The playbook fails fast, before touching any user, if either hash is missing or is not a crypt hash (this catches pasting a plaintext password by mistake).
+
+**Fallback SSH keys:** the admin user's key is normally fetched from `https://github.com/<admin_github_user>.keys`. If `additional_authorized_keys` (a list of literal public keys, also set in the vault file) is non-empty, a GitHub outage no longer aborts the run — those keys are installed regardless. With no fallback keys, an unreachable GitHub still fails the run, deliberately: SSH password authentication is about to be disabled, so continuing without any key would lock the node out.
+
 ### Uninstall / rollback
 
 The playbook is not destructive by default, but to undo specific tasks you can run individual tags (see below) or manually revert on the affected host.
@@ -164,12 +196,15 @@ The playbook is not destructive by default, but to undo specific tasks you can r
 
 ```
 .
-├── bootstrap.yml               # Superseded — see "SSH access" below; kept until confirmed unneeded
+├── ansible.cfg                # Default inventory, host_key_checking off, no .retry files
+├── requirements.yml           # Collections: community.general, ansible.posix
 ├── site.yml                   # Main playbook — run this (7 plays: baseline, k3s, docker, k3s_master, role_1, role_2, role_3)
 ├── inventory/
 │   └── hosts.ini              # Managed hosts + role groups (k3s_nodes / docker_nodes / k3s_master / role_1 / role_2 / role_3)
 ├── group_vars/
-│   ├── all.yml                # Variables shared by every host
+│   ├── all/
+│   │   ├── vars.yml           # Variables shared by every host
+│   │   └── vault.yml.example  # Template for the git-ignored, encrypted vault.yml (secrets)
 │   ├── k3s_nodes.yml          # K3S version/flags — applies only to [k3s_nodes]
 │   ├── docker_nodes.yml       # Docker packages/channel — applies only to [docker_nodes]
 │   ├── k3s_master.yml         # K3S control-plane flags, FluxCD/Helm versions — applies only to [k3s_master]
@@ -190,7 +225,7 @@ The playbook is not destructive by default, but to undo specific tasks you can r
 
 ## Configuration
 
-### `group_vars/all.yml` — shared variables
+### `group_vars/all/vars.yml` — shared variables
 
 | Variable | Default | Description |
 |----------|---------|-------------|
@@ -199,10 +234,13 @@ The playbook is not destructive by default, but to undo specific tasks you can r
 | `dns_servers` | `192.168.10.3`, `192.168.10.4`, `1.1.1.1` | DNS servers for `systemd-resolved` |
 | `dns_search_domain` | `salvetti.info` | DNS search domain |
 | `admin_user` | `lorenzo` | Name of the admin user to create |
-| `admin_github_user` | `masterlog80` | GitHub username from which SSH public keys are imported for `lorenzo` and `root` |
+| `admin_github_user` | `masterlog80` | GitHub username from which the admin user's SSH public keys are imported |
+| `additional_authorized_keys` | `[]` | Extra literal SSH public keys installed for the admin user (fallback if GitHub is unreachable) |
+| `root_password_hash` / `admin_user_password_hash` | **none — required, supplied via the encrypted vault** | crypt hashes for `root` and the admin user; the run fails fast if missing |
 | `zsh_users` | `{{ admin_user }}` + `root` (name + home dir pairs) | Users who get zsh/Oh My Zsh/Powerlevel10k/plugins. Add an entry (`name`, `home`) to extend it to another user |
 | `zsh_plugins` | see file — `kubectl`, `kubectx`, `kube-ps1`, `git`, `zsh-syntax-highlighting`, `zsh-autosuggestions`, `docker`, `docker-compose`, `colorize`, `last-working-dir` | Oh My Zsh plugins enabled in every `zsh_users` member's `.zshrc` |
-| `zsh_external_plugins` | `zsh-syntax-highlighting`, `zsh-autosuggestions` (name + repo pairs) | Plugins not bundled with Oh My Zsh, cloned from their upstream repo instead |
+| `zsh_external_plugins` | `zsh-syntax-highlighting`, `zsh-autosuggestions` (name + repo + pinned version) | Plugins not bundled with Oh My Zsh, cloned from their upstream repo instead |
+| `powerlevel10k_version` | `v1.20.0` | Release tag of the Powerlevel10k theme that gets cloned (the external plugins carry their own pinned `version` in `zsh_external_plugins`). Existing clones are never updated; bump deliberately |
 | `subnet_prefix` | `24` | Subnet prefix length for static IP |
 | `gateway` | `192.168.10.1` | Default gateway |
 
@@ -272,7 +310,7 @@ Run only specific parts of the playbook with `--tags`:
 | `users` | all hosts | User management |
 | `ssh` | all hosts | SSH hardening (incl. MaxAuthTries for `{{ admin_user }}`) |
 | `zsh` | all hosts | Oh My Zsh + Powerlevel10k + plugins, for every user in `zsh_users` |
-| `autologin` | all hosts | Getty autologin |
+| `console` | all hosts | Remove getty autologin (password-authenticated console login) |
 | `network` | all hosts | Static IP via Netplan |
 | `hostname` | all hosts | Set hostname |
 | `k3s` | `k3s_nodes` only | K3S installation |
@@ -424,11 +462,13 @@ ansible-playbook site.yml --limit node5 --list-tags          # shows which tags/
 Two credentials, matching the two-phase model in "SSH access" above:
 
 - **Bootstrap credential (first run on a new node):** User `root` + the node's built-in default password. Also override the run's connecting user/inventory to `root` for this template specifically — `inventory/hosts.ini`'s static `ansible_user={{ admin_user }}` is written for the steady-state case below, not bootstrap.
-- **Normal credential (every run after):** User `{{ admin_user }}` + private key
+- **Normal credential (every run after):** User `{{ admin_user }}` + private key, **plus the "Become password" field set to the plaintext root password** (sudo authenticates with root's password — see "Secrets" above).
 
-Root privilege for any *task* always comes from `become`/`sudo` inside the playbook. The bootstrap run is the one exception where the SSH connection itself is root (since `{{ admin_user }}` doesn't exist yet to connect as) — `become` is a no-op there since you're already root. Every run after bootstrap connects as `{{ admin_user }}`, never root; root SSH access is fully disabled by the end of the bootstrap run.
+Also give the template access to the vault: either the vault password plus the encrypted `group_vars/all/vault.yml`, or the same variables defined as secret variables in a Variable Group. Both password hashes are required on the bootstrap run.
 
-No password or private key is committed to this repository.
+Root privilege for any *task* always comes from `become`/`sudo` inside the playbook. The bootstrap run is the one exception where the SSH connection itself is root (since `{{ admin_user }}` doesn't exist yet to connect as) — `sudo` never asks root for a password, so no become password is needed there. Every run after bootstrap connects as `{{ admin_user }}`, never root; root SSH access is fully disabled by the end of the bootstrap run.
+
+No password, hash, or private key is committed to this repository.
 
 The role groups map directly onto task templates:
 
@@ -438,6 +478,18 @@ The role groups map directly onto task templates:
 - A fourth with `--tags k3s_master` → touches only `k3s_master`.
 
 Target IP/host selection then comes from which inventory (or `--limit`/survey variable) each template is pointed at, rather than from separate playbooks.
+
+---
+
+## Linting and validation
+
+The playbook is kept clean under `ansible-lint`'s strictest **`production`** profile (with a single justified `# noqa` — no Ansible module can list systemd swap units). To check changes before committing:
+
+```bash
+pip install ansible ansible-lint
+ansible-playbook site.yml --syntax-check
+ansible-lint
+```
 
 ---
 

@@ -1,0 +1,15 @@
+# Ansible artifacts
+*.retry
+
+# Secrets — never commit these. The real (encrypted) vault file lives at
+# group_vars/all/vault.yml; only the .example template is tracked.
+group_vars/all/vault.yml
+.vault_pass*
+vault_pass*
+*.vault_password
+
+# Local tooling noise
+.venv/
+__pycache__/
+*.pyc
+.DS_Store
