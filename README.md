@@ -2,7 +2,7 @@
 
 An Ansible playbook for bootstrapping a fleet of Linux nodes (Debian/Ubuntu-based) from a fresh OS image to a fully configured, role-specific state. Covers system updates, package installation, hardening, user management, networking, shell environment setup — plus a per-node choice of **K3S** or **Docker** (or both, or neither) driven entirely by inventory group membership.
 
-> Looking for the literal, in-order list of every operation the playbook performs? See [FLOW.md](FLOW.md). This README covers design and usage instead.
+> Looking for the literal, in-order list of every operation the playbook performs? See [FLOW.md](FLOW.md). Setting up Semaphore UI to run this repo? See [SETTINGS.md](SETTINGS.md). This README covers design and usage.
 
 ---
 
@@ -42,7 +42,7 @@ To add a new role later (e.g. `monitoring_nodes`), add a new play at the bottom 
 - 🔇 **Disable unwanted services** – stops and masks `sysstat` (and clears `/var/log/sysstat/*`) and `nvmf-autoconnect`
 - 👤 **User management** – deletes all regular non-root users other than the admin user, creates user `lorenzo` with a local-console password, sets a known password for `root`, and grants `lorenzo` sudo that authenticates with the **root** password (`Defaults rootpw`) — no passwordless sudo
 - 🔑 **SSH key import** – imports the SSH public key from GitHub account `masterlog80` for `lorenzo` (not root — root's only SSH access is the one-time password-based bootstrap run, see below)
-- 🔒 **SSH lockdown** – `PermitRootLogin no` (root's only SSH access is the one-time bootstrap run; after that, root access is only ever obtained via `{{ admin_user }}` + `sudo`/`become`), `PasswordAuthentication no`, `KbdInteractiveAuthentication no` + `ChallengeResponseAuthentication no` (closes the PAM keyboard-interactive gap password-auth-no alone leaves open), `PermitEmptyPasswords no`, `PubkeyAuthentication yes` (explicit), and `AllowUsers {{ admin_user }}` (defense in depth — SSH logins restricted to just this user). See "SSH access" below for the two-phase credential model
+- 🔒 **SSH lockdown** – `PermitRootLogin no` + `PasswordAuthentication no`, plus companion hardening that closes the gaps those two leave open on their own. See "SSH access" below for the full settings table and the two-phase credential model
 - 🔓 **sshd MaxAuthTries for `lorenzo`** – raises `MaxAuthTries` to 20 for that user only, to avoid sshd dropping the connection with "Too many authentication failures" before it reaches a valid key/password (common when an SSH agent offers many keys)
 - 🖥️ **Oh My Zsh** – installs Oh My Zsh + Powerlevel10k theme for **every user in `zsh_users`** (default: the admin user and `root`), with the plugin set: `kubectl`, `kubectx`, `kube-ps1`, `git`, `zsh-syntax-highlighting`, `zsh-autosuggestions`, `docker`, `docker-compose`, `colorize`, `last-working-dir`. `zsh-syntax-highlighting` and `zsh-autosuggestions` are cloned from their upstream repos (not bundled with Oh My Zsh); the rest ship with Oh My Zsh itself
 - 🔐 **Console login** – removes any getty autologin override so the physical console shows a normal `login:`/`Password:` prompt (checked against `lorenzo`'s password hash) instead of dropping straight into a shell. SSH remains key-only
@@ -132,22 +132,30 @@ ansible-playbook site.yml --tags docker
 
 **Two-phase credential model, matching `inventory/hosts.ini`'s `ansible_user={{ admin_user }}`:**
 
-1. **First run on a brand-new node — `root` + the node's built-in default password**
-   A truly fresh node only has a known credential for `root` (the OS/image's default password) — it doesn't yet have `{{ admin_user }}` at all, so there's no `{{ admin_user }}` password to connect with. Configure Semaphore's SSH credential for this one-time run as:
-   - **User:** `root`
-   - **Password:** the node's built-in default password
-   Since the connection is already root, `become: true` needs no password for this run (`sudo` never asks root for one). This run creates `{{ admin_user }}`, adds its GitHub public key (`ansible.posix.authorized_key`, fetched from `https://github.com/<admin_github_user>.keys`), sets the `root` and `{{ admin_user }}` passwords from the vault, grants `{{ admin_user }}` sudo (root-password authenticated), and then locks down `sshd` for good — including `PermitRootLogin no`, which means this is also the **last** run that can ever connect as `root` over SSH.
-2. **Every run after that — `{{ admin_user }}` + private-key credential**
-   Switch Semaphore's SSH credential for that node to:
-   - **User:** `{{ admin_user }}`
-   - **Private key:** the key matching the public key published at `https://github.com/<admin_github_user>.keys`
-   Root privilege for any task is obtained via `become`/`sudo` from `{{ admin_user }}` — a direct root SSH login is no longer possible at all.
+1. **First run on a brand-new node — `root` + the node's built-in default password.**
+   A truly fresh node only has a known credential for `root` (the OS/image's default
+   password) — it doesn't yet have `{{ admin_user }}` at all, so there's no
+   `{{ admin_user }}` password to connect with. Since the connection is already root,
+   `sudo` never needs to ask root for a password. This run creates `{{ admin_user }}`,
+   adds its GitHub public key (`ansible.posix.authorized_key`, fetched from
+   `https://github.com/<admin_github_user>.keys`), sets the `root` and
+   `{{ admin_user }}` passwords from the vault, grants `{{ admin_user }}` sudo
+   (root-password authenticated), and then locks down `sshd` for good — including
+   `PermitRootLogin no`, which means this is also the **last** run that can ever
+   connect as `root` over SSH.
+2. **Every run after that — `{{ admin_user }}` + private-key credential.**
+   Root privilege for any task is obtained via `become`/`sudo` from `{{ admin_user }}`
+   — a direct root SSH login is no longer possible at all.
 
-Both `inventory/hosts.ini`'s static `ansible_user={{ admin_user }}` and Semaphore's own credential "user" field can set the SSH user; whichever mechanism you use to run Semaphore's bootstrap template, it needs to override the connecting user to `root` for that one-time run specifically — the inventory's `{{ admin_user }}` default is written for the steady-state (phase 2) case. Switching Semaphore's credential (both the user and the auth method) between phase 1 and phase 2 is a manual step done in Semaphore's credential/template configuration — this playbook doesn't (and can't) automate that switch itself, since it happens outside the SSH session the playbook runs in.
+Whatever runs Ansible (CLI, CI, Semaphore, ...) needs to switch which credential it
+connects with between phase 1 and phase 2 — the inventory's `{{ admin_user }}` default
+is written for the steady-state (phase 2) case, so phase 1 needs its connecting user
+overridden to `root` for that one run. For the concrete Semaphore setup (credentials,
+templates), see [SETTINGS.md](SETTINGS.md).
 
 No password or private key is committed to this repository.
 
-> **Important:** the private key used by Semaphore/Ansible must correspond to a public
+> **Important:** the private key used to connect must correspond to a public
 > key currently published at `https://github.com/<admin_github_user>.keys`.
 > If your existing private key is not the one published on GitHub, the
 > `authorized_key` task must instead be changed to use that exact public key.
@@ -188,7 +196,7 @@ The playbook fails fast, before touching any user, if either hash is missing or 
 
 ### Uninstall / rollback
 
-The playbook is not destructive by default, but to undo specific tasks you can run individual tags (see below) or manually revert on the affected host.
+Not automated — the playbook only ever adds/changes configuration, it never uninstalls. To undo something, revert the relevant task and re-run with `--tags`, or change it manually on the host.
 
 ---
 
@@ -454,30 +462,6 @@ ansible-inventory -i inventory/hosts.ini --host node5
 ansible node5 -i inventory/hosts.ini --list-hosts -m ping   # confirms it's reachable
 ansible-playbook site.yml --limit node5 --list-tags          # shows which tags/plays would run
 ```
-
----
-
-## Running from Semaphore UI
-
-Two credentials, matching the two-phase model in "SSH access" above:
-
-- **Bootstrap credential (first run on a new node):** User `root` + the node's built-in default password. Also override the run's connecting user/inventory to `root` for this template specifically — `inventory/hosts.ini`'s static `ansible_user={{ admin_user }}` is written for the steady-state case below, not bootstrap.
-- **Normal credential (every run after):** User `{{ admin_user }}` + private key, **plus the "Become password" field set to the plaintext root password** (sudo authenticates with root's password — see "Secrets" above).
-
-Also give the template access to the vault: either the vault password plus the encrypted `group_vars/all/vault.yml`, or the same variables defined as secret variables in a Variable Group. Both password hashes are required on the bootstrap run.
-
-Root privilege for any *task* always comes from `become`/`sudo` inside the playbook. The bootstrap run is the one exception where the SSH connection itself is root (since `{{ admin_user }}` doesn't exist yet to connect as) — `sudo` never asks root for a password, so no become password is needed there. Every run after bootstrap connects as `{{ admin_user }}`, never root; root SSH access is fully disabled by the end of the bootstrap run.
-
-No password, hash, or private key is committed to this repository.
-
-The role groups map directly onto task templates:
-
-- One template running `site.yml` with no `--tags` / `--limit` set → applies baseline + whichever role each host in the inventory belongs to.
-- A second template with `--tags k3s` (or a Survey Variable for the tag) → touches only `k3s_nodes`.
-- A third with `--tags docker` → touches only `docker_nodes`.
-- A fourth with `--tags k3s_master` → touches only `k3s_master`.
-
-Target IP/host selection then comes from which inventory (or `--limit`/survey variable) each template is pointed at, rather than from separate playbooks.
 
 ---
 
