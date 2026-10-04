@@ -825,7 +825,7 @@
 
   tasks:
     # ca-certificates and curl are installed for every host via the
-    # baseline "packages" list in group_vars/all.yml — no need to
+    # baseline "packages" list in group_vars/all/vars.yml — no need to
     # re-install them here.
     - name: Ensure /etc/apt/keyrings exists
       ansible.builtin.file:

@@ -23,7 +23,7 @@ Every operation below runs with `become: true` (root privilege for the task, obt
 
 ### 2. Package installation
 3. **Fix broken packages (pre-install)** — `apt --fix-broken` equivalent, in case a previous run or manual change left packages in a broken state
-4. **Install required packages** — the full list in `group_vars/all.yml`'s `packages` (includes `sudo`, `zsh`, `usb-modeswitch`, `ca-certificates`, `curl`, `git`, `python3-pygments`, and more — see that file for the complete list)
+4. **Install required packages** — the full list in `group_vars/all/vars.yml`'s `packages` (includes `sudo`, `zsh`, `usb-modeswitch`, `ca-certificates`, `curl`, `git`, `python3-pygments`, and more — see that file for the complete list)
 5. **Fix broken packages (post-install)** — same `--fix-broken` pass, run again after installation
 
 ### 3. Disable swap
@@ -33,7 +33,7 @@ Every operation below runs with `become: true` (root privilege for the task, obt
 9. **Mask and stop each systemd swap unit** so swap can't come back via systemd
 
 ### 4. Timezone
-10. **Set timezone** to `group_vars/all.yml`'s `timezone` (default `Asia/Tokyo`)
+10. **Set timezone** to `group_vars/all/vars.yml`'s `timezone` (default `Asia/Tokyo`)
 
 ### 5. NTP (Chrony or systemd-timesyncd — auto-detected or forced)
 11. **Gather service facts** to detect which NTP implementation (if any) is already active
