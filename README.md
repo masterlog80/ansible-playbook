@@ -7,22 +7,6 @@ An Ansible playbook that bootstraps a fleet of Debian/Ubuntu nodes from a fresh 
 
 ---
 
-## Design
-
-One playbook (`site.yml`), one play per role. A host's role(s) come from its inventory group — no forking the playbook per device.
-
-| Play | Group | Does |
-|---|---|---|
-| Baseline | `all` | Updates, packages, swap, timezone, NTP, DNS, udev rules, disabled services, users, SSH hardening, zsh, console login, static IP, hostname |
-| K3S | `k3s_nodes` | Installs K3S |
-| Docker | `docker_nodes` | Installs Docker Engine + Compose |
-| K3S control-plane | `k3s_master` | K3S with control-plane flags, taint, FluxCD, Helm |
-| `role_1` / `role_2` / `role_3` | matching group | Placeholders — replace with real work when needed |
-
-A host can be in any combination of groups (baseline-only is fine too). See "Adding a role" below to add another.
-
----
-
 ## Features
 
 - 🔄 **Updates** – `apt update` + dist-upgrade, wrapped in `apt --fix-broken`
@@ -79,6 +63,39 @@ ansible-playbook site.yml --tags docker      # just one role, all hosts in it
 
 ---
 
+## Configuration
+
+`group_vars/all/vars.yml` (shared) — key variables:
+
+| Variable | Default | Description |
+|---|---|---|
+| `packages` | see file | apt packages on every node |
+| `timezone` | `Asia/Tokyo` | |
+| `dns_servers` / `dns_search_domain` | — | `systemd-resolved` config |
+| `admin_user` / `admin_github_user` | `lorenzo` / `masterlog80` | Admin account + key source |
+| `zsh_users` | `lorenzo` + `root` | Who gets Oh My Zsh |
+| `subnet_prefix` / `gateway` | `24` / `192.168.10.1` | Static IP defaults |
+
+Per-role files: `group_vars/k3s_nodes.yml` (`k3s_version`, `k3s_install_flags`), `docker_nodes.yml` (`docker_channel`, `docker_packages`), `k3s_master.yml` (control-plane flags, `fluxcd_version`, `helm_version`). `host_vars/<node>.yml` overrides `static_ip` per host.
+
+---
+
+## Design
+
+One playbook (`site.yml`), one play per role. A host's role(s) come from its inventory group — no forking the playbook per device.
+
+| Play | Group | Does |
+|---|---|---|
+| Baseline | `all` | Updates, packages, swap, timezone, NTP, DNS, udev rules, disabled services, users, SSH hardening, zsh, console login, static IP, hostname |
+| K3S | `k3s_nodes` | Installs K3S |
+| Docker | `docker_nodes` | Installs Docker Engine + Compose |
+| K3S control-plane | `k3s_master` | K3S with control-plane flags, taint, FluxCD, Helm |
+| `role_1` / `role_2` / `role_3` | matching group | Placeholders — replace with real work when needed |
+
+A host can be in any combination of groups (baseline-only is fine too). See "Adding a role" below to add another.
+
+---
+
 ## Security
 
 **Two-phase auth:** a brand-new node only has a known `root` password, so bootstrap connects as `root` + that password. That one run creates the admin user (`lorenzo`), installs its GitHub SSH key, sets both passwords, and locks `sshd` down for good — after that, `root` can never SSH in again, and every later run connects as `lorenzo` + private key.
@@ -108,23 +125,6 @@ ansible-playbook site.yml --ask-vault-pass --ask-become-pass
 ```
 
 The run fails fast if either hash is missing or isn't a real crypt hash. `additional_authorized_keys` in the vault gives a fallback if GitHub is unreachable when fetching `lorenzo`'s key.
-
----
-
-## Configuration
-
-`group_vars/all/vars.yml` (shared) — key variables:
-
-| Variable | Default | Description |
-|---|---|---|
-| `packages` | see file | apt packages on every node |
-| `timezone` | `Asia/Tokyo` | |
-| `dns_servers` / `dns_search_domain` | — | `systemd-resolved` config |
-| `admin_user` / `admin_github_user` | `lorenzo` / `masterlog80` | Admin account + key source |
-| `zsh_users` | `lorenzo` + `root` | Who gets Oh My Zsh |
-| `subnet_prefix` / `gateway` | `24` / `192.168.10.1` | Static IP defaults |
-
-Per-role files: `group_vars/k3s_nodes.yml` (`k3s_version`, `k3s_install_flags`), `docker_nodes.yml` (`docker_channel`, `docker_packages`), `k3s_master.yml` (control-plane flags, `fluxcd_version`, `helm_version`). `host_vars/<node>.yml` overrides `static_ip` per host.
 
 ---
 
