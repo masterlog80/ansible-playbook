@@ -38,37 +38,51 @@ Templates) is scoped to this one project.
 
 ---
 
-## 3. Key Store — four entries
+## 3. Key Store
 
-`ansible-playbook` is private, and the bootstrap model needs two *different* SSH
-credentials (root+password, then `{{ admin_user }}`+key) plus a separate git-access
-credential. Create all four under **Key Store**:
+Create these credentials under **Key Store**:
 
-| Name | Type | Contents | Used for |
-|------|------|----------|----------|
-| `git-deploy-key` | SSH Key | A **read-only deploy key** for `masterlog80/ansible-playbook` (see 3a) | Cloning the repo itself |
-| `bootstrap-root` | Login/Password | User `root`, password = the node's built-in default password | The one-time bootstrap run on a brand-new node |
-| `lorenzo-key` | SSH Key | User `{{ admin_user }}` (`lorenzo`), the private key matching the public key published at `https://github.com/<admin_github_user>.keys`, **Become password** = the plaintext root password | Every run after bootstrap |
+| Name | Type | Login / contents | Used for |
+|------|------|------------------|----------|
+| `git-deploy-key` | SSH Key | Private half of a read-only GitHub deploy key | Cloning this private repository |
+| `bootstrap-root` | Login with password | Login: `root`; password: factory password (e.g. `orangepi`) | First run on a brand-new node only |
+| `lorenzo-key` | SSH Key | Login: `lorenzo`; private key without a passphrase | Normal runs after bootstrap |
+| `lorenzo-key-protected` | SSH Key | Login: `lorenzo`; private key and its passphrase | Optional alternative for normal runs |
+| `lorenzo-sudo` | Login with password | Login: `root`; password: the new root password set by Ansible | Sudo/become after bootstrap |
 
-### 3a. Creating the git deploy key
+You only need one Lorenzo SSH-key entry per Inventory. Store an encrypted key's passphrase
+in that SSH Key credential's **Passphrase** field.
+
+### 3a. Creating the Git deploy key
+
+Generate a dedicated key pair on your workstation:
 
 ```bash
 ssh-keygen -t ed25519 -C "semaphore-ansible-playbook" -f semaphore_deploy_key -N ""
 ```
 
-Add `semaphore_deploy_key.pub` as a **Deploy key** (read-only is enough) on
-`masterlog80/ansible-playbook` under GitHub → repo → Settings → Deploy keys. Paste
-`semaphore_deploy_key` (the private half) into the `git-deploy-key` Key Store entry.
-A PAT with `repo` scope works too if you'd rather not manage a deploy key, but a
-single-repo read-only deploy key is the narrower-scoped option.
+Add the public half as a **read-only Deploy key** on this repository under GitHub →
+Settings → Deploy keys. Paste the private half into `git-deploy-key`. Never commit the
+private key.
 
-### 3b. Why two SSH credentials for the nodes
+### 3b. Two-stage node credentials
 
-This mirrors the model in README's "SSH access" section: a truly fresh node only has a
-known password for `root`; `{{ admin_user }}` doesn't exist yet to have a password of
-its own. The bootstrap run creates `{{ admin_user }}`, installs its key, and locks
-`sshd` down (including disabling root SSH for good) — after that, only `lorenzo-key`
-works, and `bootstrap-root` can never connect to that node again.
+**Bootstrap:** the `bootstrap-root` credential is selected as **User Credentials** in
+the Bootstrap Inventory. It connects as `root` with the factory password. Leave
+**Sudo Credentials** empty because the connection is already root.
+
+**After bootstrap:** select `lorenzo-key` (or `lorenzo-key-protected`) as **User
+Credentials**, and `lorenzo-sudo` as **Sudo Credentials**. The sudo credential contains
+the new root password, because the playbook configures `Defaults:lorenzo rootpw`.
+It is not Lorenzo's own password.
+
+### 3c. Which public keys are installed?
+
+The playbook fetches all public keys published by
+`https://github.com/masterlog80.keys`. If both public keys are registered in your GitHub
+account, both are installed in `lorenzo`'s `authorized_keys`. Any other public key can
+be added through the optional `additional_authorized_keys` variable. Never put private
+keys in the repository or Variable Group.
 
 ---
 
@@ -81,12 +95,39 @@ works, and `bootstrap-root` can never connect to that node again.
 
 ---
 
-## 5. Inventory
+## 5. Inventories
 
-**Inventory → New Inventory**:
-- **Type:** File
-- **Path:** `inventory/hosts.ini` (the repo's own inventory — edit it via a PR like any
-  other change, per README's "Adding a host to a role")
+Create **two Inventory entries**, both pointing to the same repository file but using
+different credentials.
+
+### 5a. Bootstrap Inventory (new nodes)
+
+| Field | Value |
+|------|-------|
+| Name | `Bootstrap nodes` |
+| User Credentials | `bootstrap-root` |
+| Sudo Credentials | Leave empty |
+| Type | File |
+| Path to Inventory file | `inventory/hosts.ini` |
+| Repository | Leave empty |
+
+### 5b. Normal Inventory (already bootstrapped nodes)
+
+| Field | Value |
+|------|-------|
+| Name | `Homelab nodes` |
+| User Credentials | `lorenzo-key` (or `lorenzo-key-protected`) |
+| Sudo Credentials | `lorenzo-sudo` |
+| Type | File |
+| Path to Inventory file | `inventory/hosts.ini` |
+| Repository | Leave empty |
+
+Leaving Repository empty makes Semaphore resolve the relative inventory path from the
+repository selected in the Task Template.
+
+Let the Inventory credential determine the SSH login. Avoid a conflicting
+`ansible_user` in the inventory or host variables, or the intended bootstrap/normal
+login may be overridden.
 
 ---
 
@@ -120,29 +161,30 @@ to the two password hashes.
 
 ## 8. Task Templates
 
-Create one template per operation. All of them use **Repository:** `ansible-playbook`,
-**Inventory:** the one from step 5, **Environment:** `default` (step 7), **Playbook:**
-`site.yml` — only the **SSH Key**, **tags**, and (for bootstrap) inventory override
-differ:
+Create two Ansible Playbook templates. Both use Repository `ansible-playbook`,
+Environment `default`, and Playbook Filename `site.yml`.
 
-| Template | SSH Key | Extra options |
-|----------|---------|----------------|
-| **Bootstrap (new node)** | `bootstrap-root` | `--limit <new-node>` (run once per new node); override the connecting user to `root` for this template |
-| **Full run (baseline + roles)** | `lorenzo-key` | none — applies baseline plus whichever role(s) each host belongs to |
-| **K3S only** | `lorenzo-key` | `--tags k3s` |
-| **Docker only** | `lorenzo-key` | `--tags docker` |
-| **K3S control-plane only** | `lorenzo-key` | `--tags k3s_master` |
+| Template | Inventory | Purpose |
+|----------|-----------|---------|
+| **Bootstrap (new node)** | `Bootstrap nodes` | Run once, limited to exactly one new node |
+| **Full configuration** | `Homelab nodes` | Normal baseline + role configuration after bootstrap |
 
-Add more templates the same way for any new role you add (see README's "Adding a new
-role") — one row per tag, `lorenzo-key` credential, no other changes.
+Do not use `lorenzo-key` for the first run: the account does not exist yet on a factory
+node.
 
 ---
 
-## 9. Onboarding a new node — the actual click-through
+## 9. Onboarding a new node
 
-1. Add the node to `inventory/hosts.ini` and a matching `host_vars/<name>.yml` (PR, per
-   README).
-2. Run **Bootstrap (new node)**, limited to that host.
-3. From then on, use **Full run** (or a role-specific template) for that node — it now
-   authenticates with `lorenzo-key`, and `bootstrap-root` will no longer be able to
-   reach it (root SSH is disabled by the bootstrap run itself).
+1. Add the node to `inventory/hosts.ini` under `[nodes]` and its role group(s). Add
+   `host_vars/<name>.yml` with its correct network and hostname settings.
+2. Confirm the Bootstrap Inventory uses `bootstrap-root` and the node's factory password.
+3. Run **Bootstrap (new node)** limited to that one hostname. The playbook creates
+   `lorenzo`, sets both account passwords, grants sudo, installs the GitHub-published
+   SSH keys (plus optional additional keys), then disables root SSH and SSH password login.
+4. Test a fresh SSH session as `lorenzo` using the selected private key.
+5. From then on, use **Full configuration** with the Normal Inventory. It connects as
+   `lorenzo` and supplies the root password for sudo.
+
+Do not run the Bootstrap template again after root SSH has been disabled. For an already
+bootstrapped node, use the Normal Inventory from the start.
