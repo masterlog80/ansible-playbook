@@ -667,6 +667,8 @@
     - name: Check if Oh My Zsh is already installed
       ansible.builtin.stat:
         path: "{{ item.home }}/.oh-my-zsh"
+      become: true
+      become_user: "{{ item.name }}"
       register: omzsh_stat
       loop: "{{ zsh_users }}"
       loop_control:
