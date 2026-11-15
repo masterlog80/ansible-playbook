@@ -1,8 +1,8 @@
 ---
 # Host-specific network configuration for node2
 # Adjust static_ip and network_interface to match the actual hardware.
-static_ip: 192.168.10.11
+static_ip: 192.168.10.242
 network_interface: eth0
 gateway: 192.168.10.1
 subnet_prefix: 24
-hostname: node2
+hostname: K3S-NODE-02
