@@ -1,0 +1,8 @@
+---
+# Host-specific network configuration for node1
+# Adjust static_ip and network_interface to match the actual hardware.
+static_ip: 192.168.10.244
+network_interface: eth0
+gateway: 192.168.10.1
+subnet_prefix: 24
+hostname: node1
