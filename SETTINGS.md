@@ -93,16 +93,17 @@ works, and `bootstrap-root` can never connect to that node again.
 ## 6. Variable Group — the vault secrets
 
 Rather than shipping an `ansible-vault`-encrypted `group_vars/all/vault.yml` and giving
-Semaphore the vault password, define the same variables directly as secret variables in
-a **Variable Group** — simpler for a UI-driven tool, and avoids managing a vault
-password as a separate credential:
+Semaphore the vault password, define the same variables directly in a **Variable Group**.
 
-**Variable Groups → New → `playbook-secrets`**, add as secret variables:
+**Variable Groups → New → `playbook-secrets`**. Under **Secrets**, add both values
+with the secret type set to **Variable** (Ansible extra variable), NOT **Environment
+variable**. This distinction matters: environment secrets are only exported to the
+process environment and do not automatically become Ansible playbook variables.
 
 | Variable | Value |
 |----------|-------|
-| `root_password_hash` | Output of `openssl passwd -6 'the-root-password'` |
-| `admin_user_password_hash` | Output of `openssl passwd -6 'the-lorenzo-console-password'` |
+| `root_password_hash` | **Variable** secret; output of `openssl passwd -6` |
+| `admin_user_password_hash` | **Variable** secret; output of `openssl passwd -6` |
 
 (If you'd rather keep using the encrypted `vault.yml` from the repo instead, that also
 works — see README's "Secrets" section — but the Variable Group avoids the extra vault
@@ -110,11 +111,12 @@ password entirely.)
 
 ---
 
-## 7. Environment
+## 7. Attach the Variable Group
 
-**Environments → New Environment → `default`**, attach the `playbook-secrets` Variable
-Group created above. Task Templates reference this Environment so every run has access
-to the two password hashes.
+Attach `playbook-secrets` to the Ansible task template under **Variable Groups**.
+In older Semaphore UI/API terminology this association may be labelled **Environment**.
+Confirm that the template is actually using this group; otherwise Ansible will not
+receive the two password hashes.
 
 ---
 

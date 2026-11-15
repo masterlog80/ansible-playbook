@@ -80,6 +80,25 @@
       ansible.builtin.command: udevadm trigger
       changed_when: true
 
+  # Validate required secrets before making ANY changes to the host.
+  # In Semaphore, these must be configured as secret variables of type
+  # "Variable" (Ansible extra vars), not secret environment variables.
+  pre_tasks:
+    - name: Ensure password hashes are provided (as crypt hashes, not plaintext)
+      ansible.builtin.assert:
+        that:
+          - root_password_hash is defined
+          - admin_user_password_hash is defined
+          - root_password_hash is match('^\\$[0-9a-z]+\\$')
+          - admin_user_password_hash is match('^\\$[0-9a-z]+\\$')
+        fail_msg: >-
+          root_password_hash and admin_user_password_hash must be supplied as
+          SHA-512 crypt hashes (starting with $6$). In Semaphore, attach the
+          playbook-secrets Variable Group and define both as secret variables
+          of type "Variable" (Ansible extra vars), not "Environment variable".
+          See SETTINGS.md and group_vars/all/vault.yml.example.
+      tags: [baseline, users]
+
   tasks:
     # -------------------------------------------------------------------------
     # 1. System Update
@@ -386,25 +405,6 @@
     # -------------------------------------------------------------------------
     # 9. User management
     # -------------------------------------------------------------------------
-
-    # Fail fast, with an actionable message, if the secret password hashes
-    # haven't been supplied (they live in the encrypted group_vars/all/
-    # vault.yml — see group_vars/all/vault.yml.example). The pattern check
-    # catches the easy mistake of pasting a plaintext password instead of a
-    # crypt hash.
-    - name: Ensure password hashes are provided (as crypt hashes, not plaintext)
-      ansible.builtin.assert:
-        that:
-          - root_password_hash is defined
-          - admin_user_password_hash is defined
-          - root_password_hash is match('^\\$[0-9a-z]+\\$')
-          - admin_user_password_hash is match('^\\$[0-9a-z]+\\$')
-        fail_msg: >-
-          root_password_hash and admin_user_password_hash must be defined as
-          crypt hashes (starting with $6$ ...). Generate one with
-          `openssl passwd -6 'password'` and store them in the encrypted
-          group_vars/all/vault.yml. See group_vars/all/vault.yml.example.
-      tags: [baseline, users]
 
     # Create the admin user first so that there is always an active admin
     # account even while the playbook is running. The password (hash) is only
