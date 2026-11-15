@@ -111,11 +111,12 @@ password entirely.)
 
 ---
 
-## 7. Environment
+## 7. Attach the Variable Group
 
-**Environments → New Environment → `default`**, attach the `playbook-secrets` Variable
-Group created above. Task Templates reference this Environment so every run has access
-to the two password hashes.
+Attach `playbook-secrets` to the Ansible task template under **Variable Groups**.
+In older Semaphore UI/API terminology this association may be labelled **Environment**.
+Confirm that the template is actually using this group; otherwise Ansible will not
+receive the two password hashes.
 
 ---
 
