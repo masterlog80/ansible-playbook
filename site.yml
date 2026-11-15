@@ -731,6 +731,8 @@
         owner: "{{ item.name }}"
         group: "{{ item.name }}"
         mode: "0644"
+      become: true
+      become_user: "{{ item.name }}"
       loop: "{{ zsh_users }}"
       loop_control:
         label: "{{ item.name }}"
