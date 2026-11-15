@@ -80,6 +80,1949 @@
       ansible.builtin.command: udevadm trigger
       changed_when: true
 
+  # Validate required secrets before making ANY changes to the host.
+  # In Semaphore, these must be configured as secret variables of type
+  # "Variable" (Ansible extra vars), not secret environment variables.
+  pre_tasks:
+    - name: Ensure password hashes are provided (as crypt hashes, not plaintext)
+      ansible.builtin.assert:
+        that:
+          - root_password_hash is defined
+          - admin_user_password_hash is defined
+          - root_password_hash is match('^\\$[0-9a-z]+\\
+    # -------------------------------------------------------------------------
+    - name: Update apt cache
+      ansible.builtin.apt:
+        update_cache: true
+        cache_valid_time: 3600
+      tags: [baseline, update]
+
+    - name: Dist-upgrade all packages
+      ansible.builtin.apt:
+        upgrade: dist
+        autoremove: true
+        autoclean: true
+      tags: [baseline, update]
+
+    # -------------------------------------------------------------------------
+    # 2. Package Installation
+    # -------------------------------------------------------------------------
+    - name: Fix broken packages (pre-install)
+      ansible.builtin.apt:
+        state: fixed
+      tags: [baseline, packages]
+
+    - name: Install required packages
+      ansible.builtin.apt:
+        name: "{{ packages }}"
+        state: present
+      tags: [baseline, packages]
+
+    - name: Fix broken packages (post-install)
+      ansible.builtin.apt:
+        state: fixed
+      tags: [baseline, packages]
+
+    # -------------------------------------------------------------------------
+    # 3. Disable swap
+    # -------------------------------------------------------------------------
+    - name: Disable all swap immediately
+      ansible.builtin.command: swapoff -a
+      register: swapoff_result
+      changed_when: swapoff_result.rc == 0
+      tags: [baseline, swap]
+
+    - name: Remove swap entries from /etc/fstab
+      ansible.builtin.replace:
+        path: /etc/fstab
+        regexp: '^([^#\n].*?\sswap\s+\S+\s+.*)$'
+        replace: '# \1'
+      tags: [baseline, swap]
+
+    # --plain drops the bullet marker systemd prints in front of failed units,
+    # so the first whitespace-separated field is always the unit name.
+    - name: List systemd swap units
+      # No module can list swap units; the systemd module only manages named ones.
+      ansible.builtin.command: systemctl list-units --type swap --all --no-legend --plain  # noqa: command-instead-of-module
+      register: swap_units
+      changed_when: false
+      tags: [baseline, swap]
+
+    - name: Mask and stop systemd swap units
+      ansible.builtin.systemd:
+        name: "{{ item.split()[0] }}"
+        masked: true
+        state: stopped
+      loop: "{{ swap_units.stdout_lines }}"
+      tags: [baseline, swap]
+
+    # -------------------------------------------------------------------------
+    # 4. Timezone
+    # -------------------------------------------------------------------------
+    - name: Set timezone to {{ timezone }}
+      community.general.timezone:
+        name: "{{ timezone }}"
+      tags: [baseline, timezone]
+
+    # -------------------------------------------------------------------------
+    # 5. NTP
+    # -------------------------------------------------------------------------
+    # Detect the NTP implementation before installing/configuring either one.
+    # With ntp_client=auto, an already-active implementation is preserved.
+    # If neither is active, Chrony is selected as the default.
+    - name: Gather service facts for NTP detection
+      ansible.builtin.service_facts:
+      tags: [baseline, ntp]
+
+    - name: Select NTP client automatically
+      ansible.builtin.set_fact:
+        selected_ntp_client: >-
+          {{ 'chrony' if ansible_facts.services.get('chrony.service', {}).get('state') == 'running'
+             else 'systemd-timesyncd' if ansible_facts.services.get('systemd-timesyncd.service', {}).get('state') == 'running'
+             else 'chrony' }}
+      when: ntp_client == 'auto'
+      tags: [baseline, ntp]
+
+    - name: Select configured NTP client
+      ansible.builtin.set_fact:
+        selected_ntp_client: "{{ ntp_client }}"
+      when: ntp_client != 'auto'
+      tags: [baseline, ntp]
+
+    - name: Validate selected NTP client
+      ansible.builtin.assert:
+        that:
+          - selected_ntp_client in ['chrony', 'systemd-timesyncd']
+        fail_msg: "ntp_client must be 'auto', 'chrony', or 'systemd-timesyncd'."
+      tags: [baseline, ntp]
+
+    - name: Install Chrony when selected
+      ansible.builtin.apt:
+        name: chrony
+        state: present
+      when: selected_ntp_client == 'chrony'
+      tags: [baseline, ntp]
+
+    - name: Install systemd-timesyncd when selected
+      ansible.builtin.apt:
+        name: systemd-timesyncd
+        state: present
+      when: selected_ntp_client == 'systemd-timesyncd'
+      tags: [baseline, ntp]
+
+    - name: Deploy Chrony configuration
+      ansible.builtin.template:
+        src: templates/chrony.conf.j2
+        dest: /etc/chrony/chrony.conf
+        owner: root
+        group: root
+        mode: "0644"
+      notify: Restart chrony
+      when: selected_ntp_client == 'chrony'
+      tags: [baseline, ntp]
+
+    - name: Ensure Chrony is running and enabled
+      ansible.builtin.service:
+        name: chrony
+        state: started
+        enabled: true
+      when: selected_ntp_client == 'chrony'
+      tags: [baseline, ntp]
+
+    - name: Deploy systemd-timesyncd configuration
+      ansible.builtin.template:
+        src: templates/systemd-timesyncd.conf.j2
+        dest: /etc/systemd/timesyncd.conf
+        owner: root
+        group: root
+        mode: "0644"
+      notify: Restart systemd-timesyncd
+      when: selected_ntp_client == 'systemd-timesyncd'
+      tags: [baseline, ntp]
+
+    - name: Ensure systemd-timesyncd is running and enabled
+      ansible.builtin.service:
+        name: systemd-timesyncd
+        state: started
+        enabled: true
+      when: selected_ntp_client == 'systemd-timesyncd'
+      tags: [baseline, ntp]
+
+    - name: Disable systemd-timesyncd when Chrony is selected
+      ansible.builtin.service:
+        name: systemd-timesyncd
+        state: stopped
+        enabled: false
+      when:
+        - selected_ntp_client == 'chrony'
+        - ansible_facts.services.get('systemd-timesyncd.service', {}).get('state') in ['running', 'stopped']
+      tags: [baseline, ntp]
+
+    - name: Disable Chrony when systemd-timesyncd is selected
+      ansible.builtin.service:
+        name: chrony
+        state: stopped
+        enabled: false
+      when:
+        - selected_ntp_client == 'systemd-timesyncd'
+        - ansible_facts.services.get('chrony.service', {}).get('state') in ['running', 'stopped']
+      tags: [baseline, ntp]
+
+    # -------------------------------------------------------------------------
+    # 6. DNS & Domain via systemd-resolved
+    # -------------------------------------------------------------------------
+    - name: Deploy systemd-resolved configuration
+      ansible.builtin.template:
+        src: templates/resolved.conf.j2
+        dest: /etc/systemd/resolved.conf
+        owner: root
+        group: root
+        mode: "0644"
+      notify: Restart systemd-resolved
+      tags: [baseline, dns]
+
+    - name: Ensure systemd-resolved is running and enabled
+      ansible.builtin.service:
+        name: systemd-resolved
+        state: started
+        enabled: true
+      tags: [baseline, dns]
+
+    # DNSStubListener=no above frees port 53, but /etc/resolv.conf on
+    # Ubuntu/Debian defaults to a symlink pointing at stub-resolv.conf
+    # (which lists the now-dead 127.0.0.53 stub address). Repoint it at
+    # systemd-resolved's non-stub resolv.conf so DNS resolution keeps
+    # working instead of breaking once the stub listener is off.
+    - name: Point /etc/resolv.conf at systemd-resolved's non-stub resolv.conf
+      ansible.builtin.file:
+        src: /run/systemd/resolve/resolv.conf
+        dest: /etc/resolv.conf
+        state: link
+        force: true
+      tags: [baseline, dns]
+
+    # -------------------------------------------------------------------------
+    # 7. udev rules (GSM modem, UPS OMRON, UPS APC)
+    # -------------------------------------------------------------------------
+    - name: Deploy GSM modem udev rule (Qualcomm)
+      ansible.builtin.copy:
+        dest: /etc/udev/rules.d/90-qualcomm.rules
+        content: |
+          SUBSYSTEM=="usb", ATTR{idVendor}=="05c6", ATTR{idProduct}=="1000", RUN+="/usr/sbin/usb_modeswitch -W -v 05c6 -p 1000 -K"
+        owner: root
+        group: root
+        mode: "0644"
+      notify:
+        - Reload udev rules
+        - Trigger udev
+      tags: [baseline, udev, modem]
+
+    - name: Deploy UPS OMRON udev rule
+      ansible.builtin.copy:
+        dest: /etc/udev/rules.d/90-omron-ups.conf
+        content: |
+          SUBSYSTEM=="usb", ENV{DEVTYPE}=="usb_device", ATTRS{idVendor}=="0590", ATTRS{idProduct}=="0081", MODE="0664", GROUP="nut", SYMLINK+="ups"
+        owner: root
+        group: root
+        mode: "0644"
+      notify:
+        - Reload udev rules
+        - Trigger udev
+      tags: [baseline, udev, ups]
+
+    - name: Deploy UPS APC udev rule
+      ansible.builtin.copy:
+        dest: /etc/udev/rules.d/99-ups.rules
+        content: |
+          SUBSYSTEM=="usb", ATTR{idVendor}=="051d", ATTR{idProduct}=="0002", SYMLINK+="ups-network"
+        owner: root
+        group: root
+        mode: "0644"
+      notify:
+        - Reload udev rules
+        - Trigger udev
+      tags: [baseline, udev, ups]
+
+    # -------------------------------------------------------------------------
+    # 8. Disable unwanted services
+    # -------------------------------------------------------------------------
+    # The service may legitimately not exist on some images — tolerate exactly
+    # that failure and nothing else.
+    - name: Stop and disable sysstat service
+      ansible.builtin.service:
+        name: sysstat
+        state: stopped
+        enabled: false
+      register: sysstat_service
+      failed_when: sysstat_service is failed and 'Could not find' not in (sysstat_service.msg | default(''))
+      tags: [baseline, sysstat]
+
+    - name: Check if /var/log/sysstat exists
+      ansible.builtin.stat:
+        path: /var/log/sysstat
+      register: sysstat_log_dir
+      tags: [baseline, sysstat]
+
+    - name: Find sysstat log files
+      ansible.builtin.find:
+        paths: /var/log/sysstat
+        patterns: "*"
+        file_type: any
+      register: sysstat_logs
+      when: sysstat_log_dir.stat.exists
+      tags: [baseline, sysstat]
+
+    - name: Delete sysstat log files
+      ansible.builtin.file:
+        path: "{{ item.path }}"
+        state: absent
+      loop: "{{ sysstat_logs.files | default([]) }}"
+      loop_control:
+        label: "{{ item.path }}"
+      tags: [baseline, sysstat]
+
+    - name: Stop and disable nvmf-autoconnect service
+      ansible.builtin.service:
+        name: nvmf-autoconnect
+        state: stopped
+        enabled: false
+      register: nvmf_service
+      failed_when: nvmf_service is failed and 'Could not find' not in (nvmf_service.msg | default(''))
+      tags: [baseline, nvmf]
+
+    # -------------------------------------------------------------------------
+    # 9. User management
+    # -------------------------------------------------------------------------
+
+    # Create the admin user first so that there is always an active admin
+    # account even while the playbook is running. The password (hash) is only
+    # used for LOCAL/physical console login — SSH stays key-only
+    # (PasswordAuthentication no, further below).
+    - name: Create admin user {{ admin_user }}
+      ansible.builtin.user:
+        name: "{{ admin_user }}"
+        shell: /bin/zsh
+        create_home: true
+        password: "{{ admin_user_password_hash }}"
+        update_password: always
+        state: present
+      tags: [baseline, users]
+
+    # Root's password is set to a known value from the vault. sudo is then
+    # told (rootpw, below) to ask for THIS password rather than the invoking
+    # user's own, so Ansible must supply it as ansible_become_password.
+    - name: Set root password
+      ansible.builtin.user:
+        name: root
+        password: "{{ root_password_hash }}"
+        update_password: always
+      tags: [baseline, users]
+
+    # sudo requires authentication (no NOPASSWD), and "rootpw" makes it check
+    # the ROOT password instead of {{ admin_user }}'s own. Scoped to this user
+    # only via Defaults:<user> so it never affects any other sudoers entry.
+    - name: Grant admin user sudo, authenticating with the root password
+      ansible.builtin.copy:
+        dest: "/etc/sudoers.d/{{ admin_user }}"
+        content: |
+          {{ admin_user }} ALL=(ALL) ALL
+          Defaults:{{ admin_user }} rootpw
+        owner: root
+        group: root
+        mode: "0440"
+        validate: visudo -cf %s
+      tags: [baseline, users]
+
+    # GitHub is the primary key source. If it is unreachable and literal
+    # fallback keys were provided (additional_authorized_keys), a failure here
+    # is tolerated; with no fallback keys it still fails the run — which is the
+    # safe outcome, because SSH password auth is disabled further below and
+    # continuing without any key would lock the node out.
+    - name: Add SSH public key from GitHub for {{ admin_user }}
+      ansible.posix.authorized_key:
+        user: "{{ admin_user }}"
+        key: "https://github.com/{{ admin_github_user }}.keys"
+        state: present
+      register: github_key
+      failed_when: github_key is failed and (additional_authorized_keys | length) == 0
+      tags: [baseline, users]
+
+    - name: Add additional SSH public keys for {{ admin_user }}
+      ansible.posix.authorized_key:
+        user: "{{ admin_user }}"
+        key: "{{ item }}"
+        state: present
+      loop: "{{ additional_authorized_keys }}"
+      loop_control:
+        label: "{{ item.split(' ')[-1] }}"
+      tags: [baseline, users]
+
+    - name: Set root's shell to zsh
+      ansible.builtin.user:
+        name: root
+        shell: /bin/zsh
+      tags: [baseline, users, zsh]
+
+    # Collect users to delete AFTER the admin user is ready.
+    - name: Read the passwd database
+      ansible.builtin.getent:
+        database: passwd
+      tags: [baseline, users]
+
+    # Regular users = UID >= 1000, excluding "nobody" and the admin user.
+    # (getent returns each entry as [passwd, uid, gid, gecos, home, shell],
+    # with uid as a string — hence value.1 compared against the strings
+    # "0".."999".)
+    - name: Determine non-root / non-admin regular users to remove
+      ansible.builtin.set_fact:
+        users_to_delete_list: >-
+          {{ ansible_facts.getent_passwd | dict2items
+             | rejectattr('key', 'in', ['nobody', admin_user])
+             | rejectattr('value.1', 'in', range(0, 1000) | map('string') | list)
+             | map(attribute='key') | list }}
+      tags: [baseline, users]
+
+    # pkill exits 1 when nothing matched — that is fine, not a failure.
+    - name: Gracefully stop processes for users that will be deleted
+      ansible.builtin.command:
+        argv: [pkill, -TERM, -u, "{{ item }}"]
+      register: pkill_term
+      loop: "{{ users_to_delete_list }}"
+      changed_when: pkill_term.rc == 0
+      failed_when: pkill_term.rc not in [0, 1]
+      tags: [baseline, users]
+
+    - name: Wait briefly for processes to exit
+      ansible.builtin.pause:
+        seconds: 3
+      when: users_to_delete_list | length > 0
+      tags: [baseline, users]
+
+    - name: Force-kill remaining processes for users that will be deleted
+      ansible.builtin.command:
+        argv: [pkill, -KILL, -u, "{{ item }}"]
+      register: pkill_kill
+      loop: "{{ users_to_delete_list }}"
+      changed_when: pkill_kill.rc == 0
+      failed_when: pkill_kill.rc not in [0, 1]
+      tags: [baseline, users]
+
+    - name: Remove non-admin regular users and their home directories
+      ansible.builtin.user:
+        name: "{{ item }}"
+        state: absent
+        remove: true
+        force: true
+      loop: "{{ users_to_delete_list }}"
+      tags: [baseline, users]
+
+    # -------------------------------------------------------------------------
+    # 10. Disable root SSH login entirely + disable password authentication
+    # -------------------------------------------------------------------------
+    # Authentication model (two phases):
+    #   1. Bootstrap run on a brand-new node: connects as root with the
+    #      node's built-in default password. This play then creates
+    #      {{ admin_user }}, installs its SSH key, sets the root and
+    #      {{ admin_user }} passwords and the sudo rules (tasks above), and
+    #      only then locks SSH down (tasks below).
+    #   2. Every later run: connects as {{ admin_user }} with the private key
+    #      and escalates with become/sudo — which now asks for the ROOT
+    #      password (Defaults rootpw), supplied as ansible_become_password.
+    # Switching Semaphore's credential between phases is done outside this
+    # playbook (in Semaphore's credential configuration).
+    #
+    # With PermitRootLogin=no, root can never SSH in at all — by design,
+    # since root access is only ever obtained via {{ admin_user }} + sudo.
+    # With PasswordAuthentication=no, no user (including {{ admin_user }})
+    # can SSH in with a password once this task has run — only the key.
+    #
+    # Supersedes bootstrap.yml's approach (PermitRootLogin
+    # prohibit-password + a standing root SSH key): under this model root
+    # never accepts an SSH connection at all, so a permanent root key is
+    # unnecessary and bootstrap.yml's job is obsolete. See the note in
+    # README's "SSH access" section.
+    - name: Disable root SSH login entirely
+      ansible.builtin.lineinfile:
+        path: /etc/ssh/sshd_config
+        regexp: '^#?PermitRootLogin'
+        line: "PermitRootLogin no"
+        state: present
+        validate: "/usr/sbin/sshd -t -f %s"
+      notify: Restart sshd
+      tags: [baseline, ssh]
+
+    - name: Disable SSH password authentication
+      ansible.builtin.lineinfile:
+        path: /etc/ssh/sshd_config
+        regexp: '^#?PasswordAuthentication'
+        line: "PasswordAuthentication no"
+        state: present
+        validate: "/usr/sbin/sshd -t -f %s"
+      notify: Restart sshd
+      tags: [baseline, ssh]
+
+    # The four tasks below close the common gaps left by PermitRootLogin=no
+    # + PasswordAuthentication=no alone (industry-standard companions to
+    # that pair — see e.g. the Mozilla OpenSSH guidelines / CIS Benchmarks):
+    - name: Ensure public-key authentication is enabled
+      ansible.builtin.lineinfile:
+        path: /etc/ssh/sshd_config
+        regexp: '^#?PubkeyAuthentication'
+        line: "PubkeyAuthentication yes"
+        state: present
+        validate: "/usr/sbin/sshd -t -f %s"
+      notify: Restart sshd
+      tags: [baseline, ssh]
+
+    # PasswordAuthentication=no does NOT by itself block PAM-driven
+    # keyboard-interactive prompts, which on some systems still allow a
+    # password to be entered through a different code path. This closes
+    # that gap. ChallengeResponseAuthentication is the older/deprecated
+    # name for the same setting, kept here too for OpenSSH versions where
+    # KbdInteractiveAuthentication isn't recognized.
+    - name: Disable keyboard-interactive authentication
+      ansible.builtin.lineinfile:
+        path: /etc/ssh/sshd_config
+        regexp: '^#?KbdInteractiveAuthentication'
+        line: "KbdInteractiveAuthentication no"
+        state: present
+        validate: "/usr/sbin/sshd -t -f %s"
+      notify: Restart sshd
+      tags: [baseline, ssh]
+
+    - name: Disable challenge-response authentication (legacy alias)
+      ansible.builtin.lineinfile:
+        path: /etc/ssh/sshd_config
+        regexp: '^#?ChallengeResponseAuthentication'
+        line: "ChallengeResponseAuthentication no"
+        state: present
+        validate: "/usr/sbin/sshd -t -f %s"
+      notify: Restart sshd
+      tags: [baseline, ssh]
+
+    - name: Disable empty-password logins
+      ansible.builtin.lineinfile:
+        path: /etc/ssh/sshd_config
+        regexp: '^#?PermitEmptyPasswords'
+        line: "PermitEmptyPasswords no"
+        state: present
+        validate: "/usr/sbin/sshd -t -f %s"
+      notify: Restart sshd
+      tags: [baseline, ssh]
+
+    # Defense in depth: even though non-admin users are deleted (task
+    # above) and root can't SSH in at all, explicitly restrict SSH logins
+    # to {{ admin_user }} only. insertafter anchors this to a directive
+    # that's guaranteed to already exist above the MaxAuthTries "Match
+    # User" block further down, so this stays a global (not Match-scoped)
+    # directive regardless of run order.
+    - name: Restrict SSH logins to the admin user only
+      ansible.builtin.lineinfile:
+        path: /etc/ssh/sshd_config
+        regexp: '^AllowUsers'
+        line: "AllowUsers {{ admin_user }}"
+        insertafter: '^PasswordAuthentication'
+        state: present
+        validate: "/usr/sbin/sshd -t -f %s"
+      notify: Restart sshd
+      tags: [baseline, ssh]
+
+    # -------------------------------------------------------------------------
+    # 10b. Raise MaxAuthTries for {{ admin_user }} — avoids sshd dropping the
+    #      connection with "Too many authentication failures" before it ever
+    #      reaches the right key/password, which happens when an SSH agent
+    #      offers more keys than sshd's default MaxAuthTries (6) allows.
+    #      Best-effort fix for the symptom described in the linked Reddit
+    #      thread — https://www.reddit.com/r/linuxquestions/comments/17l75ir/
+    #      (thread content couldn't be fetched directly to confirm the exact
+    #      recommended fix; this is the standard remedy for that symptom).
+    # -------------------------------------------------------------------------
+    - name: Raise sshd MaxAuthTries for {{ admin_user }}
+      ansible.builtin.blockinfile:
+        path: /etc/ssh/sshd_config
+        marker: "# {mark} ANSIBLE MANAGED BLOCK - {{ admin_user }} MaxAuthTries"
+        insertafter: EOF
+        block: |
+          Match User {{ admin_user }}
+              MaxAuthTries 20
+        validate: "/usr/sbin/sshd -t -f %s"
+      notify: Restart sshd
+      tags: [baseline, ssh]
+
+    # -------------------------------------------------------------------------
+    # 11. ZSH – Oh My Zsh, Powerlevel10k, plugins (for every user in zsh_users)
+    # -------------------------------------------------------------------------
+    - name: Check if Oh My Zsh is already installed
+      ansible.builtin.stat:
+        path: "{{ item.home }}/.oh-my-zsh"
+      register: omzsh_stat
+      loop: "{{ zsh_users }}"
+      loop_control:
+        label: "{{ item.name }}"
+      tags: [baseline, zsh]
+
+    - name: Install Oh My Zsh
+      # Security note: the installer is fetched from the official ohmyzsh repo.
+      # RUNZSH=no and CHSH=no prevent the script from switching the shell
+      # interactively; the shell is already set via the user module above.
+      ansible.builtin.shell: |
+        RUNZSH=no CHSH=no \
+        sh -c "$(curl -fsSL https://raw.githubusercontent.com/ohmyzsh/ohmyzsh/master/tools/install.sh)"
+      become: true
+      become_user: "{{ item.item.name }}"
+      environment:
+        HOME: "{{ item.item.home }}"
+      args:
+        creates: "{{ item.item.home }}/.oh-my-zsh"
+      loop: "{{ omzsh_stat.results }}"
+      loop_control:
+        label: "{{ item.item.name }}"
+      when: not item.stat.exists
+      tags: [baseline, zsh]
+
+    - name: Clone Powerlevel10k theme
+      ansible.builtin.git:
+        repo: https://github.com/romkatv/powerlevel10k.git
+        dest: "{{ item.home }}/.oh-my-zsh/custom/themes/powerlevel10k"
+        depth: 1
+        version: "{{ powerlevel10k_version }}"
+        update: false
+      become: true
+      become_user: "{{ item.name }}"
+      loop: "{{ zsh_users }}"
+      loop_control:
+        label: "{{ item.name }}"
+      tags: [baseline, zsh]
+
+    - name: Clone external zsh plugins (zsh-syntax-highlighting, zsh-autosuggestions)
+      ansible.builtin.git:
+        repo: "{{ item.1.repo }}"
+        dest: "{{ item.0.home }}/.oh-my-zsh/custom/plugins/{{ item.1.name }}"
+        depth: 1
+        version: "{{ item.1.version }}"
+        update: false
+      become: true
+      become_user: "{{ item.0.name }}"
+      with_nested:
+        - "{{ zsh_users }}"
+        - "{{ zsh_external_plugins }}"
+      loop_control:
+        label: "{{ item.0.name }} / {{ item.1.name }}"
+      tags: [baseline, zsh]
+
+    - name: Deploy .zshrc
+      ansible.builtin.template:
+        src: templates/zshrc.j2
+        dest: "{{ item.home }}/.zshrc"
+        owner: "{{ item.name }}"
+        group: "{{ item.name }}"
+        mode: "0644"
+      loop: "{{ zsh_users }}"
+      loop_control:
+        label: "{{ item.name }}"
+      tags: [baseline, zsh]
+
+    # -------------------------------------------------------------------------
+    # 12. Local console login — password required (no autologin)
+    # -------------------------------------------------------------------------
+    # Earlier revisions auto-logged {{ admin_user }} into the physical console
+    # with no authentication, which — combined with sudo — meant anyone with
+    # console access had a root shell, undermining the SSH hardening below.
+    # Any leftover autologin override is removed so the distribution's stock
+    # getty behaviour applies: a normal "login:" + "Password:" prompt, checked
+    # against admin_user_password_hash set above.
+    - name: Remove getty autologin override (/lib)
+      ansible.builtin.file:
+        path: /lib/systemd/system/getty@.service.d/override.conf
+        state: absent
+      notify: Reload systemd
+      tags: [baseline, console]
+
+    - name: Remove getty autologin override (/etc)
+      ansible.builtin.file:
+        path: /etc/systemd/system/getty@.service.d/override.conf
+        state: absent
+      notify: Reload systemd
+      tags: [baseline, console]
+
+    # -------------------------------------------------------------------------
+    # 13. Static IP via Netplan
+    # -------------------------------------------------------------------------
+    - name: Deploy Netplan static-IP configuration
+      ansible.builtin.template:
+        src: templates/netplan.yml.j2
+        dest: /etc/netplan/01-ansible-static.yaml
+        owner: root
+        group: root
+        mode: "0600"
+      notify: Apply netplan
+      tags: [baseline, network]
+
+    # -------------------------------------------------------------------------
+    # 14. Hostname
+    # -------------------------------------------------------------------------
+    - name: Set hostname to {{ hostname }}
+      ansible.builtin.hostname:
+        name: "{{ hostname }}"
+      tags: [baseline, hostname]
+
+    - name: Ensure hostname is in /etc/hosts
+      ansible.builtin.lineinfile:
+        path: /etc/hosts
+        regexp: '^127\.0\.1\.1\s+'
+        line: "127.0.1.1 {{ hostname }}"
+        state: present
+      tags: [baseline, hostname]
+
+# =============================================================================
+# PLAY 2 — K3S role (hosts in [k3s_nodes])
+# =============================================================================
+- name: K3S role
+  hosts: k3s_nodes
+  become: true
+  tags: [k3s]
+
+  tasks:
+    # Security note: the K3S installer is fetched directly from
+    # https://get.k3s.io. When pinning a specific version via k3s_version,
+    # you can additionally verify the binary checksum from the official
+    # release page at https://github.com/k3s-io/k3s/releases
+    - name: Download K3S install script
+      ansible.builtin.get_url:
+        url: https://get.k3s.io
+        dest: /tmp/k3s-install.sh
+        mode: "0755"
+      tags: [k3s]
+
+    - name: Run K3S install script
+      ansible.builtin.command: /tmp/k3s-install.sh
+      environment:
+        INSTALL_K3S_VERSION: "{{ k3s_version }}"
+        INSTALL_K3S_EXEC: "{{ k3s_install_flags }}"
+      args:
+        creates: /usr/local/bin/k3s
+      tags: [k3s]
+
+# =============================================================================
+# PLAY 3 — Docker role (hosts in [docker_nodes])
+# =============================================================================
+- name: Docker role
+  hosts: docker_nodes
+  become: true
+  tags: [docker]
+
+  tasks:
+    # ca-certificates and curl are installed for every host via the
+    # baseline "packages" list in group_vars/all/vars.yml — no need to
+    # re-install them here.
+    - name: Ensure /etc/apt/keyrings exists
+      ansible.builtin.file:
+        path: /etc/apt/keyrings
+        state: directory
+        owner: root
+        group: root
+        mode: "0755"
+      tags: [docker]
+
+    # Docker's official apt repo is split by distro (ubuntu vs debian) even
+    # though both use the same package set — this repo supports both
+    # (README: "Debian 11+ or Ubuntu 20.04+"), so the distro segment of the
+    # URL must be selected at runtime rather than hardcoded to one of them.
+    - name: Determine Docker apt repo distro path
+      ansible.builtin.set_fact:
+        docker_repo_distro: "{{ 'ubuntu' if ansible_distribution == 'Ubuntu' else 'debian' }}"
+      tags: [docker]
+
+    # Security note: Docker's official GPG key, fetched over HTTPS from
+    # download.docker.com and used to verify the apt repo below.
+    - name: Download Docker's official GPG key
+      ansible.builtin.get_url:
+        url: "https://download.docker.com/linux/{{ docker_repo_distro }}/gpg"
+        dest: /etc/apt/keyrings/docker.asc
+        mode: "0644"
+      tags: [docker]
+
+    - name: Determine dpkg architecture
+      ansible.builtin.command: dpkg --print-architecture
+      register: dpkg_arch
+      changed_when: false
+      tags: [docker]
+
+    # deb822_repository (the apt "deb822" .sources format, which is also what
+    # Docker's own docs now use) replaces ansible.builtin.apt_repository,
+    # which is deprecated in current ansible-core. It needs python3-debian on
+    # the target.
+    - name: Install python3-debian (required by deb822_repository)
+      ansible.builtin.apt:
+        name: python3-debian
+        state: present
+      tags: [docker]
+
+    # Nodes provisioned by earlier revisions of this playbook have the same
+    # repo as a legacy one-line docker.list; leaving both in place makes apt
+    # warn about duplicate targets, so remove the old file.
+    - name: Remove legacy docker.list (superseded by docker.sources)
+      ansible.builtin.file:
+        path: /etc/apt/sources.list.d/docker.list
+        state: absent
+      tags: [docker]
+
+    - name: Add Docker apt repository
+      ansible.builtin.deb822_repository:
+        name: docker
+        types: [deb]
+        uris: "https://download.docker.com/linux/{{ docker_repo_distro }}"
+        suites: ["{{ ansible_distribution_release }}"]
+        components: ["{{ docker_channel }}"]
+        architectures: ["{{ dpkg_arch.stdout }}"]
+        signed_by: /etc/apt/keyrings/docker.asc
+        state: present
+      tags: [docker]
+
+    - name: Install Docker Engine + Compose plugin
+      ansible.builtin.apt:
+        name: "{{ docker_packages }}"
+        state: present
+        update_cache: true
+      tags: [docker]
+
+    - name: Ensure Docker service is running and enabled
+      ansible.builtin.service:
+        name: docker
+        state: started
+        enabled: true
+      tags: [docker]
+
+    - name: Add users to the docker group
+      ansible.builtin.user:
+        name: "{{ item }}"
+        groups: docker
+        append: true
+      loop: "{{ docker_group_members }}"
+      tags: [docker]
+
+# =============================================================================
+# PLAY 4 — K3S control-plane / master role (hosts in [k3s_master])
+# =============================================================================
+- name: K3S control-plane (master) role
+  hosts: k3s_master
+  become: true
+  tags: [k3s_master]
+
+  tasks:
+    - name: Download K3S install script
+      ansible.builtin.get_url:
+        url: https://get.k3s.io
+        dest: /tmp/k3s-install.sh
+        mode: "0755"
+      tags: [k3s_master]
+
+    - name: Run K3S install script (control-plane flags)
+      ansible.builtin.command: /tmp/k3s-install.sh
+      environment:
+        INSTALL_K3S_VERSION: "{{ k3s_master_version }}"
+        INSTALL_K3S_EXEC: "{{ k3s_master_install_flags }}"
+      args:
+        creates: /usr/local/bin/k3s
+      tags: [k3s_master]
+
+    # The inner --timeout is deliberately short (a few seconds); the outer
+    # retries/delay loop is what actually provides the ~180s total budget
+    # here. Combining a long inner timeout with an outer retry loop would
+    # make the worst case retries * (inner_timeout + delay) ≈ tens of
+    # minutes before failing, instead of the ~180s this is meant to allow.
+    - name: Wait for the control-plane node to be Ready
+      ansible.builtin.command: >-
+        /usr/local/bin/k3s kubectl wait --for=condition=Ready
+        node/{{ ansible_hostname }} --timeout=15s
+      changed_when: false
+      retries: 12
+      delay: 10
+      register: k3s_master_node_ready
+      until: k3s_master_node_ready.rc == 0
+      tags: [k3s_master]
+
+    # --overwrite makes this idempotent across re-runs (adds the taint if
+    # missing, harmlessly re-applies the same value if already present).
+    - name: Taint control-plane node so regular workloads don't schedule on it
+      ansible.builtin.command: >-
+        /usr/local/bin/k3s kubectl taint nodes {{ ansible_hostname }}
+        node-role.kubernetes.io/control-plane=:{{ k3s_master_taint_effect }}
+        --overwrite
+      register: k3s_master_taint
+      changed_when: "'not modified' not in k3s_master_taint.stdout"
+      tags: [k3s_master]
+
+    # The original request's "export KUBECONFIG=..." only sets it for one
+    # shell session; persisting it in /etc/environment (idempotently, via
+    # lineinfile rather than a repeated "echo >> ") is what actually makes
+    # it available to every future login/session on this node.
+    - name: Persist KUBECONFIG in /etc/environment
+      ansible.builtin.lineinfile:
+        path: /etc/environment
+        regexp: '^KUBECONFIG='
+        line: "KUBECONFIG=/etc/rancher/k3s/k3s.yaml"
+        state: present
+      tags: [k3s_master]
+
+    - name: Download FluxCD install script
+      ansible.builtin.get_url:
+        url: https://fluxcd.io/install.sh
+        dest: /tmp/flux-install.sh
+        mode: "0755"
+      tags: [k3s_master, fluxcd]
+
+    - name: Run FluxCD install script
+      ansible.builtin.command: /tmp/flux-install.sh
+      environment:
+        FLUX_VERSION: "{{ '' if fluxcd_version == 'latest' else fluxcd_version }}"
+      args:
+        creates: /usr/local/bin/flux
+      tags: [k3s_master, fluxcd]
+
+    - name: Download Helm install script
+      ansible.builtin.get_url:
+        url: https://raw.githubusercontent.com/helm/helm/main/scripts/get-helm-3
+        dest: /tmp/get-helm-3.sh
+        mode: "0755"
+      tags: [k3s_master, helm]
+
+    - name: Run Helm install script
+      ansible.builtin.command: /tmp/get-helm-3.sh
+      environment:
+        DESIRED_VERSION: "{{ '' if helm_version == 'latest' else helm_version }}"
+      args:
+        creates: /usr/local/bin/helm
+      tags: [k3s_master, helm]
+
+# =============================================================================
+# PLAY 5 — role_1 (hosts in [role_1])
+# =============================================================================
+# Placeholder role added to demonstrate/exercise the pattern described in
+# README.md ("Adding a new role"). Replace the placeholder task below with
+# whatever this role should actually do, and rename the group/tag/file trio
+# (inventory group, group_vars/role_1.yml, this play) to something
+# meaningful once its real purpose is known.
+- name: Placeholder role_1
+  hosts: role_1
+  become: true
+  tags: [role_1]
+
+  tasks:
+    - name: Placeholder task for role_1
+      ansible.builtin.debug:
+        msg: "role_1 applied to {{ inventory_hostname }} (node_role={{ node_role }})"
+      tags: [role_1]
+
+# =============================================================================
+# PLAY 6 — role_2 (hosts in [role_2])
+# =============================================================================
+# Placeholder role added to demonstrate/exercise the pattern described in
+# README.md ("Adding a new role"). Replace the placeholder task below with
+# whatever this role should actually do, and rename the group/tag/file trio
+# (inventory group, group_vars/role_2.yml, this play) to something
+# meaningful once its real purpose is known.
+- name: Placeholder role_2
+  hosts: role_2
+  become: true
+  tags: [role_2]
+
+  tasks:
+    - name: Placeholder task for role_2
+      ansible.builtin.debug:
+        msg: "role_2 applied to {{ inventory_hostname }} (node_role={{ node_role }})"
+      tags: [role_2]
+
+# =============================================================================
+# PLAY 7 — role_3 (hosts in [role_3])
+# =============================================================================
+# Placeholder role added to demonstrate/exercise the pattern described in
+# README.md ("Adding a new role"). Replace the placeholder task below with
+# whatever this role should actually do, and rename the group/tag/file trio
+# (inventory group, group_vars/role_3.yml, this play) to something
+# meaningful once its real purpose is known.
+- name: Placeholder role_3
+  hosts: role_3
+  become: true
+  tags: [role_3]
+
+  tasks:
+    - name: Placeholder task for role_3
+      ansible.builtin.debug:
+        msg: "role_3 applied to {{ inventory_hostname }} (node_role={{ node_role }})"
+      tags: [role_3]
+)
+          - admin_user_password_hash is match('^\\$[0-9a-z]+\\
+    # -------------------------------------------------------------------------
+    - name: Update apt cache
+      ansible.builtin.apt:
+        update_cache: true
+        cache_valid_time: 3600
+      tags: [baseline, update]
+
+    - name: Dist-upgrade all packages
+      ansible.builtin.apt:
+        upgrade: dist
+        autoremove: true
+        autoclean: true
+      tags: [baseline, update]
+
+    # -------------------------------------------------------------------------
+    # 2. Package Installation
+    # -------------------------------------------------------------------------
+    - name: Fix broken packages (pre-install)
+      ansible.builtin.apt:
+        state: fixed
+      tags: [baseline, packages]
+
+    - name: Install required packages
+      ansible.builtin.apt:
+        name: "{{ packages }}"
+        state: present
+      tags: [baseline, packages]
+
+    - name: Fix broken packages (post-install)
+      ansible.builtin.apt:
+        state: fixed
+      tags: [baseline, packages]
+
+    # -------------------------------------------------------------------------
+    # 3. Disable swap
+    # -------------------------------------------------------------------------
+    - name: Disable all swap immediately
+      ansible.builtin.command: swapoff -a
+      register: swapoff_result
+      changed_when: swapoff_result.rc == 0
+      tags: [baseline, swap]
+
+    - name: Remove swap entries from /etc/fstab
+      ansible.builtin.replace:
+        path: /etc/fstab
+        regexp: '^([^#\n].*?\sswap\s+\S+\s+.*)$'
+        replace: '# \1'
+      tags: [baseline, swap]
+
+    # --plain drops the bullet marker systemd prints in front of failed units,
+    # so the first whitespace-separated field is always the unit name.
+    - name: List systemd swap units
+      # No module can list swap units; the systemd module only manages named ones.
+      ansible.builtin.command: systemctl list-units --type swap --all --no-legend --plain  # noqa: command-instead-of-module
+      register: swap_units
+      changed_when: false
+      tags: [baseline, swap]
+
+    - name: Mask and stop systemd swap units
+      ansible.builtin.systemd:
+        name: "{{ item.split()[0] }}"
+        masked: true
+        state: stopped
+      loop: "{{ swap_units.stdout_lines }}"
+      tags: [baseline, swap]
+
+    # -------------------------------------------------------------------------
+    # 4. Timezone
+    # -------------------------------------------------------------------------
+    - name: Set timezone to {{ timezone }}
+      community.general.timezone:
+        name: "{{ timezone }}"
+      tags: [baseline, timezone]
+
+    # -------------------------------------------------------------------------
+    # 5. NTP
+    # -------------------------------------------------------------------------
+    # Detect the NTP implementation before installing/configuring either one.
+    # With ntp_client=auto, an already-active implementation is preserved.
+    # If neither is active, Chrony is selected as the default.
+    - name: Gather service facts for NTP detection
+      ansible.builtin.service_facts:
+      tags: [baseline, ntp]
+
+    - name: Select NTP client automatically
+      ansible.builtin.set_fact:
+        selected_ntp_client: >-
+          {{ 'chrony' if ansible_facts.services.get('chrony.service', {}).get('state') == 'running'
+             else 'systemd-timesyncd' if ansible_facts.services.get('systemd-timesyncd.service', {}).get('state') == 'running'
+             else 'chrony' }}
+      when: ntp_client == 'auto'
+      tags: [baseline, ntp]
+
+    - name: Select configured NTP client
+      ansible.builtin.set_fact:
+        selected_ntp_client: "{{ ntp_client }}"
+      when: ntp_client != 'auto'
+      tags: [baseline, ntp]
+
+    - name: Validate selected NTP client
+      ansible.builtin.assert:
+        that:
+          - selected_ntp_client in ['chrony', 'systemd-timesyncd']
+        fail_msg: "ntp_client must be 'auto', 'chrony', or 'systemd-timesyncd'."
+      tags: [baseline, ntp]
+
+    - name: Install Chrony when selected
+      ansible.builtin.apt:
+        name: chrony
+        state: present
+      when: selected_ntp_client == 'chrony'
+      tags: [baseline, ntp]
+
+    - name: Install systemd-timesyncd when selected
+      ansible.builtin.apt:
+        name: systemd-timesyncd
+        state: present
+      when: selected_ntp_client == 'systemd-timesyncd'
+      tags: [baseline, ntp]
+
+    - name: Deploy Chrony configuration
+      ansible.builtin.template:
+        src: templates/chrony.conf.j2
+        dest: /etc/chrony/chrony.conf
+        owner: root
+        group: root
+        mode: "0644"
+      notify: Restart chrony
+      when: selected_ntp_client == 'chrony'
+      tags: [baseline, ntp]
+
+    - name: Ensure Chrony is running and enabled
+      ansible.builtin.service:
+        name: chrony
+        state: started
+        enabled: true
+      when: selected_ntp_client == 'chrony'
+      tags: [baseline, ntp]
+
+    - name: Deploy systemd-timesyncd configuration
+      ansible.builtin.template:
+        src: templates/systemd-timesyncd.conf.j2
+        dest: /etc/systemd/timesyncd.conf
+        owner: root
+        group: root
+        mode: "0644"
+      notify: Restart systemd-timesyncd
+      when: selected_ntp_client == 'systemd-timesyncd'
+      tags: [baseline, ntp]
+
+    - name: Ensure systemd-timesyncd is running and enabled
+      ansible.builtin.service:
+        name: systemd-timesyncd
+        state: started
+        enabled: true
+      when: selected_ntp_client == 'systemd-timesyncd'
+      tags: [baseline, ntp]
+
+    - name: Disable systemd-timesyncd when Chrony is selected
+      ansible.builtin.service:
+        name: systemd-timesyncd
+        state: stopped
+        enabled: false
+      when:
+        - selected_ntp_client == 'chrony'
+        - ansible_facts.services.get('systemd-timesyncd.service', {}).get('state') in ['running', 'stopped']
+      tags: [baseline, ntp]
+
+    - name: Disable Chrony when systemd-timesyncd is selected
+      ansible.builtin.service:
+        name: chrony
+        state: stopped
+        enabled: false
+      when:
+        - selected_ntp_client == 'systemd-timesyncd'
+        - ansible_facts.services.get('chrony.service', {}).get('state') in ['running', 'stopped']
+      tags: [baseline, ntp]
+
+    # -------------------------------------------------------------------------
+    # 6. DNS & Domain via systemd-resolved
+    # -------------------------------------------------------------------------
+    - name: Deploy systemd-resolved configuration
+      ansible.builtin.template:
+        src: templates/resolved.conf.j2
+        dest: /etc/systemd/resolved.conf
+        owner: root
+        group: root
+        mode: "0644"
+      notify: Restart systemd-resolved
+      tags: [baseline, dns]
+
+    - name: Ensure systemd-resolved is running and enabled
+      ansible.builtin.service:
+        name: systemd-resolved
+        state: started
+        enabled: true
+      tags: [baseline, dns]
+
+    # DNSStubListener=no above frees port 53, but /etc/resolv.conf on
+    # Ubuntu/Debian defaults to a symlink pointing at stub-resolv.conf
+    # (which lists the now-dead 127.0.0.53 stub address). Repoint it at
+    # systemd-resolved's non-stub resolv.conf so DNS resolution keeps
+    # working instead of breaking once the stub listener is off.
+    - name: Point /etc/resolv.conf at systemd-resolved's non-stub resolv.conf
+      ansible.builtin.file:
+        src: /run/systemd/resolve/resolv.conf
+        dest: /etc/resolv.conf
+        state: link
+        force: true
+      tags: [baseline, dns]
+
+    # -------------------------------------------------------------------------
+    # 7. udev rules (GSM modem, UPS OMRON, UPS APC)
+    # -------------------------------------------------------------------------
+    - name: Deploy GSM modem udev rule (Qualcomm)
+      ansible.builtin.copy:
+        dest: /etc/udev/rules.d/90-qualcomm.rules
+        content: |
+          SUBSYSTEM=="usb", ATTR{idVendor}=="05c6", ATTR{idProduct}=="1000", RUN+="/usr/sbin/usb_modeswitch -W -v 05c6 -p 1000 -K"
+        owner: root
+        group: root
+        mode: "0644"
+      notify:
+        - Reload udev rules
+        - Trigger udev
+      tags: [baseline, udev, modem]
+
+    - name: Deploy UPS OMRON udev rule
+      ansible.builtin.copy:
+        dest: /etc/udev/rules.d/90-omron-ups.conf
+        content: |
+          SUBSYSTEM=="usb", ENV{DEVTYPE}=="usb_device", ATTRS{idVendor}=="0590", ATTRS{idProduct}=="0081", MODE="0664", GROUP="nut", SYMLINK+="ups"
+        owner: root
+        group: root
+        mode: "0644"
+      notify:
+        - Reload udev rules
+        - Trigger udev
+      tags: [baseline, udev, ups]
+
+    - name: Deploy UPS APC udev rule
+      ansible.builtin.copy:
+        dest: /etc/udev/rules.d/99-ups.rules
+        content: |
+          SUBSYSTEM=="usb", ATTR{idVendor}=="051d", ATTR{idProduct}=="0002", SYMLINK+="ups-network"
+        owner: root
+        group: root
+        mode: "0644"
+      notify:
+        - Reload udev rules
+        - Trigger udev
+      tags: [baseline, udev, ups]
+
+    # -------------------------------------------------------------------------
+    # 8. Disable unwanted services
+    # -------------------------------------------------------------------------
+    # The service may legitimately not exist on some images — tolerate exactly
+    # that failure and nothing else.
+    - name: Stop and disable sysstat service
+      ansible.builtin.service:
+        name: sysstat
+        state: stopped
+        enabled: false
+      register: sysstat_service
+      failed_when: sysstat_service is failed and 'Could not find' not in (sysstat_service.msg | default(''))
+      tags: [baseline, sysstat]
+
+    - name: Check if /var/log/sysstat exists
+      ansible.builtin.stat:
+        path: /var/log/sysstat
+      register: sysstat_log_dir
+      tags: [baseline, sysstat]
+
+    - name: Find sysstat log files
+      ansible.builtin.find:
+        paths: /var/log/sysstat
+        patterns: "*"
+        file_type: any
+      register: sysstat_logs
+      when: sysstat_log_dir.stat.exists
+      tags: [baseline, sysstat]
+
+    - name: Delete sysstat log files
+      ansible.builtin.file:
+        path: "{{ item.path }}"
+        state: absent
+      loop: "{{ sysstat_logs.files | default([]) }}"
+      loop_control:
+        label: "{{ item.path }}"
+      tags: [baseline, sysstat]
+
+    - name: Stop and disable nvmf-autoconnect service
+      ansible.builtin.service:
+        name: nvmf-autoconnect
+        state: stopped
+        enabled: false
+      register: nvmf_service
+      failed_when: nvmf_service is failed and 'Could not find' not in (nvmf_service.msg | default(''))
+      tags: [baseline, nvmf]
+
+    # -------------------------------------------------------------------------
+    # 9. User management
+    # -------------------------------------------------------------------------
+
+    # Create the admin user first so that there is always an active admin
+    # account even while the playbook is running. The password (hash) is only
+    # used for LOCAL/physical console login — SSH stays key-only
+    # (PasswordAuthentication no, further below).
+    - name: Create admin user {{ admin_user }}
+      ansible.builtin.user:
+        name: "{{ admin_user }}"
+        shell: /bin/zsh
+        create_home: true
+        password: "{{ admin_user_password_hash }}"
+        update_password: always
+        state: present
+      tags: [baseline, users]
+
+    # Root's password is set to a known value from the vault. sudo is then
+    # told (rootpw, below) to ask for THIS password rather than the invoking
+    # user's own, so Ansible must supply it as ansible_become_password.
+    - name: Set root password
+      ansible.builtin.user:
+        name: root
+        password: "{{ root_password_hash }}"
+        update_password: always
+      tags: [baseline, users]
+
+    # sudo requires authentication (no NOPASSWD), and "rootpw" makes it check
+    # the ROOT password instead of {{ admin_user }}'s own. Scoped to this user
+    # only via Defaults:<user> so it never affects any other sudoers entry.
+    - name: Grant admin user sudo, authenticating with the root password
+      ansible.builtin.copy:
+        dest: "/etc/sudoers.d/{{ admin_user }}"
+        content: |
+          {{ admin_user }} ALL=(ALL) ALL
+          Defaults:{{ admin_user }} rootpw
+        owner: root
+        group: root
+        mode: "0440"
+        validate: visudo -cf %s
+      tags: [baseline, users]
+
+    # GitHub is the primary key source. If it is unreachable and literal
+    # fallback keys were provided (additional_authorized_keys), a failure here
+    # is tolerated; with no fallback keys it still fails the run — which is the
+    # safe outcome, because SSH password auth is disabled further below and
+    # continuing without any key would lock the node out.
+    - name: Add SSH public key from GitHub for {{ admin_user }}
+      ansible.posix.authorized_key:
+        user: "{{ admin_user }}"
+        key: "https://github.com/{{ admin_github_user }}.keys"
+        state: present
+      register: github_key
+      failed_when: github_key is failed and (additional_authorized_keys | length) == 0
+      tags: [baseline, users]
+
+    - name: Add additional SSH public keys for {{ admin_user }}
+      ansible.posix.authorized_key:
+        user: "{{ admin_user }}"
+        key: "{{ item }}"
+        state: present
+      loop: "{{ additional_authorized_keys }}"
+      loop_control:
+        label: "{{ item.split(' ')[-1] }}"
+      tags: [baseline, users]
+
+    - name: Set root's shell to zsh
+      ansible.builtin.user:
+        name: root
+        shell: /bin/zsh
+      tags: [baseline, users, zsh]
+
+    # Collect users to delete AFTER the admin user is ready.
+    - name: Read the passwd database
+      ansible.builtin.getent:
+        database: passwd
+      tags: [baseline, users]
+
+    # Regular users = UID >= 1000, excluding "nobody" and the admin user.
+    # (getent returns each entry as [passwd, uid, gid, gecos, home, shell],
+    # with uid as a string — hence value.1 compared against the strings
+    # "0".."999".)
+    - name: Determine non-root / non-admin regular users to remove
+      ansible.builtin.set_fact:
+        users_to_delete_list: >-
+          {{ ansible_facts.getent_passwd | dict2items
+             | rejectattr('key', 'in', ['nobody', admin_user])
+             | rejectattr('value.1', 'in', range(0, 1000) | map('string') | list)
+             | map(attribute='key') | list }}
+      tags: [baseline, users]
+
+    # pkill exits 1 when nothing matched — that is fine, not a failure.
+    - name: Gracefully stop processes for users that will be deleted
+      ansible.builtin.command:
+        argv: [pkill, -TERM, -u, "{{ item }}"]
+      register: pkill_term
+      loop: "{{ users_to_delete_list }}"
+      changed_when: pkill_term.rc == 0
+      failed_when: pkill_term.rc not in [0, 1]
+      tags: [baseline, users]
+
+    - name: Wait briefly for processes to exit
+      ansible.builtin.pause:
+        seconds: 3
+      when: users_to_delete_list | length > 0
+      tags: [baseline, users]
+
+    - name: Force-kill remaining processes for users that will be deleted
+      ansible.builtin.command:
+        argv: [pkill, -KILL, -u, "{{ item }}"]
+      register: pkill_kill
+      loop: "{{ users_to_delete_list }}"
+      changed_when: pkill_kill.rc == 0
+      failed_when: pkill_kill.rc not in [0, 1]
+      tags: [baseline, users]
+
+    - name: Remove non-admin regular users and their home directories
+      ansible.builtin.user:
+        name: "{{ item }}"
+        state: absent
+        remove: true
+        force: true
+      loop: "{{ users_to_delete_list }}"
+      tags: [baseline, users]
+
+    # -------------------------------------------------------------------------
+    # 10. Disable root SSH login entirely + disable password authentication
+    # -------------------------------------------------------------------------
+    # Authentication model (two phases):
+    #   1. Bootstrap run on a brand-new node: connects as root with the
+    #      node's built-in default password. This play then creates
+    #      {{ admin_user }}, installs its SSH key, sets the root and
+    #      {{ admin_user }} passwords and the sudo rules (tasks above), and
+    #      only then locks SSH down (tasks below).
+    #   2. Every later run: connects as {{ admin_user }} with the private key
+    #      and escalates with become/sudo — which now asks for the ROOT
+    #      password (Defaults rootpw), supplied as ansible_become_password.
+    # Switching Semaphore's credential between phases is done outside this
+    # playbook (in Semaphore's credential configuration).
+    #
+    # With PermitRootLogin=no, root can never SSH in at all — by design,
+    # since root access is only ever obtained via {{ admin_user }} + sudo.
+    # With PasswordAuthentication=no, no user (including {{ admin_user }})
+    # can SSH in with a password once this task has run — only the key.
+    #
+    # Supersedes bootstrap.yml's approach (PermitRootLogin
+    # prohibit-password + a standing root SSH key): under this model root
+    # never accepts an SSH connection at all, so a permanent root key is
+    # unnecessary and bootstrap.yml's job is obsolete. See the note in
+    # README's "SSH access" section.
+    - name: Disable root SSH login entirely
+      ansible.builtin.lineinfile:
+        path: /etc/ssh/sshd_config
+        regexp: '^#?PermitRootLogin'
+        line: "PermitRootLogin no"
+        state: present
+        validate: "/usr/sbin/sshd -t -f %s"
+      notify: Restart sshd
+      tags: [baseline, ssh]
+
+    - name: Disable SSH password authentication
+      ansible.builtin.lineinfile:
+        path: /etc/ssh/sshd_config
+        regexp: '^#?PasswordAuthentication'
+        line: "PasswordAuthentication no"
+        state: present
+        validate: "/usr/sbin/sshd -t -f %s"
+      notify: Restart sshd
+      tags: [baseline, ssh]
+
+    # The four tasks below close the common gaps left by PermitRootLogin=no
+    # + PasswordAuthentication=no alone (industry-standard companions to
+    # that pair — see e.g. the Mozilla OpenSSH guidelines / CIS Benchmarks):
+    - name: Ensure public-key authentication is enabled
+      ansible.builtin.lineinfile:
+        path: /etc/ssh/sshd_config
+        regexp: '^#?PubkeyAuthentication'
+        line: "PubkeyAuthentication yes"
+        state: present
+        validate: "/usr/sbin/sshd -t -f %s"
+      notify: Restart sshd
+      tags: [baseline, ssh]
+
+    # PasswordAuthentication=no does NOT by itself block PAM-driven
+    # keyboard-interactive prompts, which on some systems still allow a
+    # password to be entered through a different code path. This closes
+    # that gap. ChallengeResponseAuthentication is the older/deprecated
+    # name for the same setting, kept here too for OpenSSH versions where
+    # KbdInteractiveAuthentication isn't recognized.
+    - name: Disable keyboard-interactive authentication
+      ansible.builtin.lineinfile:
+        path: /etc/ssh/sshd_config
+        regexp: '^#?KbdInteractiveAuthentication'
+        line: "KbdInteractiveAuthentication no"
+        state: present
+        validate: "/usr/sbin/sshd -t -f %s"
+      notify: Restart sshd
+      tags: [baseline, ssh]
+
+    - name: Disable challenge-response authentication (legacy alias)
+      ansible.builtin.lineinfile:
+        path: /etc/ssh/sshd_config
+        regexp: '^#?ChallengeResponseAuthentication'
+        line: "ChallengeResponseAuthentication no"
+        state: present
+        validate: "/usr/sbin/sshd -t -f %s"
+      notify: Restart sshd
+      tags: [baseline, ssh]
+
+    - name: Disable empty-password logins
+      ansible.builtin.lineinfile:
+        path: /etc/ssh/sshd_config
+        regexp: '^#?PermitEmptyPasswords'
+        line: "PermitEmptyPasswords no"
+        state: present
+        validate: "/usr/sbin/sshd -t -f %s"
+      notify: Restart sshd
+      tags: [baseline, ssh]
+
+    # Defense in depth: even though non-admin users are deleted (task
+    # above) and root can't SSH in at all, explicitly restrict SSH logins
+    # to {{ admin_user }} only. insertafter anchors this to a directive
+    # that's guaranteed to already exist above the MaxAuthTries "Match
+    # User" block further down, so this stays a global (not Match-scoped)
+    # directive regardless of run order.
+    - name: Restrict SSH logins to the admin user only
+      ansible.builtin.lineinfile:
+        path: /etc/ssh/sshd_config
+        regexp: '^AllowUsers'
+        line: "AllowUsers {{ admin_user }}"
+        insertafter: '^PasswordAuthentication'
+        state: present
+        validate: "/usr/sbin/sshd -t -f %s"
+      notify: Restart sshd
+      tags: [baseline, ssh]
+
+    # -------------------------------------------------------------------------
+    # 10b. Raise MaxAuthTries for {{ admin_user }} — avoids sshd dropping the
+    #      connection with "Too many authentication failures" before it ever
+    #      reaches the right key/password, which happens when an SSH agent
+    #      offers more keys than sshd's default MaxAuthTries (6) allows.
+    #      Best-effort fix for the symptom described in the linked Reddit
+    #      thread — https://www.reddit.com/r/linuxquestions/comments/17l75ir/
+    #      (thread content couldn't be fetched directly to confirm the exact
+    #      recommended fix; this is the standard remedy for that symptom).
+    # -------------------------------------------------------------------------
+    - name: Raise sshd MaxAuthTries for {{ admin_user }}
+      ansible.builtin.blockinfile:
+        path: /etc/ssh/sshd_config
+        marker: "# {mark} ANSIBLE MANAGED BLOCK - {{ admin_user }} MaxAuthTries"
+        insertafter: EOF
+        block: |
+          Match User {{ admin_user }}
+              MaxAuthTries 20
+        validate: "/usr/sbin/sshd -t -f %s"
+      notify: Restart sshd
+      tags: [baseline, ssh]
+
+    # -------------------------------------------------------------------------
+    # 11. ZSH – Oh My Zsh, Powerlevel10k, plugins (for every user in zsh_users)
+    # -------------------------------------------------------------------------
+    - name: Check if Oh My Zsh is already installed
+      ansible.builtin.stat:
+        path: "{{ item.home }}/.oh-my-zsh"
+      register: omzsh_stat
+      loop: "{{ zsh_users }}"
+      loop_control:
+        label: "{{ item.name }}"
+      tags: [baseline, zsh]
+
+    - name: Install Oh My Zsh
+      # Security note: the installer is fetched from the official ohmyzsh repo.
+      # RUNZSH=no and CHSH=no prevent the script from switching the shell
+      # interactively; the shell is already set via the user module above.
+      ansible.builtin.shell: |
+        RUNZSH=no CHSH=no \
+        sh -c "$(curl -fsSL https://raw.githubusercontent.com/ohmyzsh/ohmyzsh/master/tools/install.sh)"
+      become: true
+      become_user: "{{ item.item.name }}"
+      environment:
+        HOME: "{{ item.item.home }}"
+      args:
+        creates: "{{ item.item.home }}/.oh-my-zsh"
+      loop: "{{ omzsh_stat.results }}"
+      loop_control:
+        label: "{{ item.item.name }}"
+      when: not item.stat.exists
+      tags: [baseline, zsh]
+
+    - name: Clone Powerlevel10k theme
+      ansible.builtin.git:
+        repo: https://github.com/romkatv/powerlevel10k.git
+        dest: "{{ item.home }}/.oh-my-zsh/custom/themes/powerlevel10k"
+        depth: 1
+        version: "{{ powerlevel10k_version }}"
+        update: false
+      become: true
+      become_user: "{{ item.name }}"
+      loop: "{{ zsh_users }}"
+      loop_control:
+        label: "{{ item.name }}"
+      tags: [baseline, zsh]
+
+    - name: Clone external zsh plugins (zsh-syntax-highlighting, zsh-autosuggestions)
+      ansible.builtin.git:
+        repo: "{{ item.1.repo }}"
+        dest: "{{ item.0.home }}/.oh-my-zsh/custom/plugins/{{ item.1.name }}"
+        depth: 1
+        version: "{{ item.1.version }}"
+        update: false
+      become: true
+      become_user: "{{ item.0.name }}"
+      with_nested:
+        - "{{ zsh_users }}"
+        - "{{ zsh_external_plugins }}"
+      loop_control:
+        label: "{{ item.0.name }} / {{ item.1.name }}"
+      tags: [baseline, zsh]
+
+    - name: Deploy .zshrc
+      ansible.builtin.template:
+        src: templates/zshrc.j2
+        dest: "{{ item.home }}/.zshrc"
+        owner: "{{ item.name }}"
+        group: "{{ item.name }}"
+        mode: "0644"
+      loop: "{{ zsh_users }}"
+      loop_control:
+        label: "{{ item.name }}"
+      tags: [baseline, zsh]
+
+    # -------------------------------------------------------------------------
+    # 12. Local console login — password required (no autologin)
+    # -------------------------------------------------------------------------
+    # Earlier revisions auto-logged {{ admin_user }} into the physical console
+    # with no authentication, which — combined with sudo — meant anyone with
+    # console access had a root shell, undermining the SSH hardening below.
+    # Any leftover autologin override is removed so the distribution's stock
+    # getty behaviour applies: a normal "login:" + "Password:" prompt, checked
+    # against admin_user_password_hash set above.
+    - name: Remove getty autologin override (/lib)
+      ansible.builtin.file:
+        path: /lib/systemd/system/getty@.service.d/override.conf
+        state: absent
+      notify: Reload systemd
+      tags: [baseline, console]
+
+    - name: Remove getty autologin override (/etc)
+      ansible.builtin.file:
+        path: /etc/systemd/system/getty@.service.d/override.conf
+        state: absent
+      notify: Reload systemd
+      tags: [baseline, console]
+
+    # -------------------------------------------------------------------------
+    # 13. Static IP via Netplan
+    # -------------------------------------------------------------------------
+    - name: Deploy Netplan static-IP configuration
+      ansible.builtin.template:
+        src: templates/netplan.yml.j2
+        dest: /etc/netplan/01-ansible-static.yaml
+        owner: root
+        group: root
+        mode: "0600"
+      notify: Apply netplan
+      tags: [baseline, network]
+
+    # -------------------------------------------------------------------------
+    # 14. Hostname
+    # -------------------------------------------------------------------------
+    - name: Set hostname to {{ hostname }}
+      ansible.builtin.hostname:
+        name: "{{ hostname }}"
+      tags: [baseline, hostname]
+
+    - name: Ensure hostname is in /etc/hosts
+      ansible.builtin.lineinfile:
+        path: /etc/hosts
+        regexp: '^127\.0\.1\.1\s+'
+        line: "127.0.1.1 {{ hostname }}"
+        state: present
+      tags: [baseline, hostname]
+
+# =============================================================================
+# PLAY 2 — K3S role (hosts in [k3s_nodes])
+# =============================================================================
+- name: K3S role
+  hosts: k3s_nodes
+  become: true
+  tags: [k3s]
+
+  tasks:
+    # Security note: the K3S installer is fetched directly from
+    # https://get.k3s.io. When pinning a specific version via k3s_version,
+    # you can additionally verify the binary checksum from the official
+    # release page at https://github.com/k3s-io/k3s/releases
+    - name: Download K3S install script
+      ansible.builtin.get_url:
+        url: https://get.k3s.io
+        dest: /tmp/k3s-install.sh
+        mode: "0755"
+      tags: [k3s]
+
+    - name: Run K3S install script
+      ansible.builtin.command: /tmp/k3s-install.sh
+      environment:
+        INSTALL_K3S_VERSION: "{{ k3s_version }}"
+        INSTALL_K3S_EXEC: "{{ k3s_install_flags }}"
+      args:
+        creates: /usr/local/bin/k3s
+      tags: [k3s]
+
+# =============================================================================
+# PLAY 3 — Docker role (hosts in [docker_nodes])
+# =============================================================================
+- name: Docker role
+  hosts: docker_nodes
+  become: true
+  tags: [docker]
+
+  tasks:
+    # ca-certificates and curl are installed for every host via the
+    # baseline "packages" list in group_vars/all/vars.yml — no need to
+    # re-install them here.
+    - name: Ensure /etc/apt/keyrings exists
+      ansible.builtin.file:
+        path: /etc/apt/keyrings
+        state: directory
+        owner: root
+        group: root
+        mode: "0755"
+      tags: [docker]
+
+    # Docker's official apt repo is split by distro (ubuntu vs debian) even
+    # though both use the same package set — this repo supports both
+    # (README: "Debian 11+ or Ubuntu 20.04+"), so the distro segment of the
+    # URL must be selected at runtime rather than hardcoded to one of them.
+    - name: Determine Docker apt repo distro path
+      ansible.builtin.set_fact:
+        docker_repo_distro: "{{ 'ubuntu' if ansible_distribution == 'Ubuntu' else 'debian' }}"
+      tags: [docker]
+
+    # Security note: Docker's official GPG key, fetched over HTTPS from
+    # download.docker.com and used to verify the apt repo below.
+    - name: Download Docker's official GPG key
+      ansible.builtin.get_url:
+        url: "https://download.docker.com/linux/{{ docker_repo_distro }}/gpg"
+        dest: /etc/apt/keyrings/docker.asc
+        mode: "0644"
+      tags: [docker]
+
+    - name: Determine dpkg architecture
+      ansible.builtin.command: dpkg --print-architecture
+      register: dpkg_arch
+      changed_when: false
+      tags: [docker]
+
+    # deb822_repository (the apt "deb822" .sources format, which is also what
+    # Docker's own docs now use) replaces ansible.builtin.apt_repository,
+    # which is deprecated in current ansible-core. It needs python3-debian on
+    # the target.
+    - name: Install python3-debian (required by deb822_repository)
+      ansible.builtin.apt:
+        name: python3-debian
+        state: present
+      tags: [docker]
+
+    # Nodes provisioned by earlier revisions of this playbook have the same
+    # repo as a legacy one-line docker.list; leaving both in place makes apt
+    # warn about duplicate targets, so remove the old file.
+    - name: Remove legacy docker.list (superseded by docker.sources)
+      ansible.builtin.file:
+        path: /etc/apt/sources.list.d/docker.list
+        state: absent
+      tags: [docker]
+
+    - name: Add Docker apt repository
+      ansible.builtin.deb822_repository:
+        name: docker
+        types: [deb]
+        uris: "https://download.docker.com/linux/{{ docker_repo_distro }}"
+        suites: ["{{ ansible_distribution_release }}"]
+        components: ["{{ docker_channel }}"]
+        architectures: ["{{ dpkg_arch.stdout }}"]
+        signed_by: /etc/apt/keyrings/docker.asc
+        state: present
+      tags: [docker]
+
+    - name: Install Docker Engine + Compose plugin
+      ansible.builtin.apt:
+        name: "{{ docker_packages }}"
+        state: present
+        update_cache: true
+      tags: [docker]
+
+    - name: Ensure Docker service is running and enabled
+      ansible.builtin.service:
+        name: docker
+        state: started
+        enabled: true
+      tags: [docker]
+
+    - name: Add users to the docker group
+      ansible.builtin.user:
+        name: "{{ item }}"
+        groups: docker
+        append: true
+      loop: "{{ docker_group_members }}"
+      tags: [docker]
+
+# =============================================================================
+# PLAY 4 — K3S control-plane / master role (hosts in [k3s_master])
+# =============================================================================
+- name: K3S control-plane (master) role
+  hosts: k3s_master
+  become: true
+  tags: [k3s_master]
+
+  tasks:
+    - name: Download K3S install script
+      ansible.builtin.get_url:
+        url: https://get.k3s.io
+        dest: /tmp/k3s-install.sh
+        mode: "0755"
+      tags: [k3s_master]
+
+    - name: Run K3S install script (control-plane flags)
+      ansible.builtin.command: /tmp/k3s-install.sh
+      environment:
+        INSTALL_K3S_VERSION: "{{ k3s_master_version }}"
+        INSTALL_K3S_EXEC: "{{ k3s_master_install_flags }}"
+      args:
+        creates: /usr/local/bin/k3s
+      tags: [k3s_master]
+
+    # The inner --timeout is deliberately short (a few seconds); the outer
+    # retries/delay loop is what actually provides the ~180s total budget
+    # here. Combining a long inner timeout with an outer retry loop would
+    # make the worst case retries * (inner_timeout + delay) ≈ tens of
+    # minutes before failing, instead of the ~180s this is meant to allow.
+    - name: Wait for the control-plane node to be Ready
+      ansible.builtin.command: >-
+        /usr/local/bin/k3s kubectl wait --for=condition=Ready
+        node/{{ ansible_hostname }} --timeout=15s
+      changed_when: false
+      retries: 12
+      delay: 10
+      register: k3s_master_node_ready
+      until: k3s_master_node_ready.rc == 0
+      tags: [k3s_master]
+
+    # --overwrite makes this idempotent across re-runs (adds the taint if
+    # missing, harmlessly re-applies the same value if already present).
+    - name: Taint control-plane node so regular workloads don't schedule on it
+      ansible.builtin.command: >-
+        /usr/local/bin/k3s kubectl taint nodes {{ ansible_hostname }}
+        node-role.kubernetes.io/control-plane=:{{ k3s_master_taint_effect }}
+        --overwrite
+      register: k3s_master_taint
+      changed_when: "'not modified' not in k3s_master_taint.stdout"
+      tags: [k3s_master]
+
+    # The original request's "export KUBECONFIG=..." only sets it for one
+    # shell session; persisting it in /etc/environment (idempotently, via
+    # lineinfile rather than a repeated "echo >> ") is what actually makes
+    # it available to every future login/session on this node.
+    - name: Persist KUBECONFIG in /etc/environment
+      ansible.builtin.lineinfile:
+        path: /etc/environment
+        regexp: '^KUBECONFIG='
+        line: "KUBECONFIG=/etc/rancher/k3s/k3s.yaml"
+        state: present
+      tags: [k3s_master]
+
+    - name: Download FluxCD install script
+      ansible.builtin.get_url:
+        url: https://fluxcd.io/install.sh
+        dest: /tmp/flux-install.sh
+        mode: "0755"
+      tags: [k3s_master, fluxcd]
+
+    - name: Run FluxCD install script
+      ansible.builtin.command: /tmp/flux-install.sh
+      environment:
+        FLUX_VERSION: "{{ '' if fluxcd_version == 'latest' else fluxcd_version }}"
+      args:
+        creates: /usr/local/bin/flux
+      tags: [k3s_master, fluxcd]
+
+    - name: Download Helm install script
+      ansible.builtin.get_url:
+        url: https://raw.githubusercontent.com/helm/helm/main/scripts/get-helm-3
+        dest: /tmp/get-helm-3.sh
+        mode: "0755"
+      tags: [k3s_master, helm]
+
+    - name: Run Helm install script
+      ansible.builtin.command: /tmp/get-helm-3.sh
+      environment:
+        DESIRED_VERSION: "{{ '' if helm_version == 'latest' else helm_version }}"
+      args:
+        creates: /usr/local/bin/helm
+      tags: [k3s_master, helm]
+
+# =============================================================================
+# PLAY 5 — role_1 (hosts in [role_1])
+# =============================================================================
+# Placeholder role added to demonstrate/exercise the pattern described in
+# README.md ("Adding a new role"). Replace the placeholder task below with
+# whatever this role should actually do, and rename the group/tag/file trio
+# (inventory group, group_vars/role_1.yml, this play) to something
+# meaningful once its real purpose is known.
+- name: Placeholder role_1
+  hosts: role_1
+  become: true
+  tags: [role_1]
+
+  tasks:
+    - name: Placeholder task for role_1
+      ansible.builtin.debug:
+        msg: "role_1 applied to {{ inventory_hostname }} (node_role={{ node_role }})"
+      tags: [role_1]
+
+# =============================================================================
+# PLAY 6 — role_2 (hosts in [role_2])
+# =============================================================================
+# Placeholder role added to demonstrate/exercise the pattern described in
+# README.md ("Adding a new role"). Replace the placeholder task below with
+# whatever this role should actually do, and rename the group/tag/file trio
+# (inventory group, group_vars/role_2.yml, this play) to something
+# meaningful once its real purpose is known.
+- name: Placeholder role_2
+  hosts: role_2
+  become: true
+  tags: [role_2]
+
+  tasks:
+    - name: Placeholder task for role_2
+      ansible.builtin.debug:
+        msg: "role_2 applied to {{ inventory_hostname }} (node_role={{ node_role }})"
+      tags: [role_2]
+
+# =============================================================================
+# PLAY 7 — role_3 (hosts in [role_3])
+# =============================================================================
+# Placeholder role added to demonstrate/exercise the pattern described in
+# README.md ("Adding a new role"). Replace the placeholder task below with
+# whatever this role should actually do, and rename the group/tag/file trio
+# (inventory group, group_vars/role_3.yml, this play) to something
+# meaningful once its real purpose is known.
+- name: Placeholder role_3
+  hosts: role_3
+  become: true
+  tags: [role_3]
+
+  tasks:
+    - name: Placeholder task for role_3
+      ansible.builtin.debug:
+        msg: "role_3 applied to {{ inventory_hostname }} (node_role={{ node_role }})"
+      tags: [role_3]
+)
+        fail_msg: >-
+          root_password_hash and admin_user_password_hash must be supplied as
+          SHA-512 crypt hashes (starting with $6$). In Semaphore, attach the
+          playbook-secrets Variable Group and define both as secret variables
+          of type "Variable" (Ansible extra vars), not "Environment variable".
+          See SETTINGS.md and group_vars/all/vault.yml.example.
+      tags: [baseline, users]
+
   tasks:
     # -------------------------------------------------------------------------
     # 1. System Update
@@ -386,25 +2329,6 @@
     # -------------------------------------------------------------------------
     # 9. User management
     # -------------------------------------------------------------------------
-
-    # Fail fast, with an actionable message, if the secret password hashes
-    # haven't been supplied (they live in the encrypted group_vars/all/
-    # vault.yml — see group_vars/all/vault.yml.example). The pattern check
-    # catches the easy mistake of pasting a plaintext password instead of a
-    # crypt hash.
-    - name: Ensure password hashes are provided (as crypt hashes, not plaintext)
-      ansible.builtin.assert:
-        that:
-          - root_password_hash is defined
-          - admin_user_password_hash is defined
-          - root_password_hash is match('^\\$[0-9a-z]+\\$')
-          - admin_user_password_hash is match('^\\$[0-9a-z]+\\$')
-        fail_msg: >-
-          root_password_hash and admin_user_password_hash must be defined as
-          crypt hashes (starting with $6$ ...). Generate one with
-          `openssl passwd -6 'password'` and store them in the encrypted
-          group_vars/all/vault.yml. See group_vars/all/vault.yml.example.
-      tags: [baseline, users]
 
     # Create the admin user first so that there is always an active admin
     # account even while the playbook is running. The password (hash) is only
