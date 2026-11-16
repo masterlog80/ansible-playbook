@@ -169,8 +169,7 @@ Each runs after PLAY 4, only on hosts in its matching inventory group (`[role_1]
 **Runs on:** hosts explicitly listed in `[nvme_present]`. The default target is `/dev/nvme0n1`, mounted at `/mnt/K3S`.
 
 1. Verify that the target exists and is a block device.
-2. Read its byte capacity with `blockdev` and require a 128 GB-class size (120,000,000,000 to 139,999,999,999 bytes). This check happens before installing utilities or making disk changes.
-3. Install `parted` and `e2fsprogs`.
+2. Install `parted` and `e2fsprogs`.
 3. Inspect the partition table. A new GPT table is created only when the disk is blank; an existing GPT partition 1 is reused. Other layouts fail safely.
 4. Create partition 1 spanning the disk only if it does not already exist.
 5. Create an ext4 filesystem only if the partition has no filesystem signature; an existing filesystem is not force-formatted.
