@@ -132,7 +132,7 @@ environment lookup and suppresses output for the installer task.
 
 ## 8. Attach the Variable Groups
 
-Attach both `playbook-secrets` and `k3s-agent-secrets` to the Ansible task template under **Variable Groups**. If Semaphore permits separate template associations, attach `k3s-agent-secrets` only to templates that run the `k3s_nodes` play.
+Attach `playbook-secrets` to the Ansible task template under **Variable Groups**. Also attach `k3s-agent-secrets` to the agent template (and any full-run template that includes `[k3s_nodes]`).
 In older Semaphore UI/API terminology this association may be labelled **Environment**.
 Confirm that the template is actually using this group; otherwise Ansible will not
 receive the two password hashes.
@@ -142,7 +142,7 @@ receive the two password hashes.
 ## 9. Task Templates
 
 Create one template per operation. All of them use **Repository:** `ansible-playbook`,
-**Inventory:** the one from step 5, **Environment:** `default` (step 7), **Playbook:**
+**Inventory:** the one from step 5, **Variable Groups:** `playbook-secrets` (and `k3s-agent-secrets` for agent runs), **Playbook:**
 `site.yml` — only the **SSH Key**, **tags**, and (for bootstrap) inventory override
 differ:
 
@@ -151,7 +151,6 @@ differ:
 | **Bootstrap (new node)** | `bootstrap-root` | `--limit <new-node>` (run once per new node); override the connecting user to `root` for this template |
 | **Full run (baseline + roles)** | `lorenzo-key` | none — applies baseline plus whichever role(s) each host belongs to |
 | **K3S agents** | `lorenzo-key` | `--tags k3s_nodes` (requires `k3s-agent-secrets`) |
-| **K3S control-plane only** | `lorenzo-key` | `--tags k3s_master` |
 | **Docker only** | `lorenzo-key` | `--tags docker` |
 | **K3S control-plane only** | `lorenzo-key` | `--tags k3s_master` |
 
