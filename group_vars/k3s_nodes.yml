@@ -2,6 +2,13 @@
 # =============================================================================
 # Variables for hosts in [k3s_nodes]
 # =============================================================================
-# This group is reserved for K3S worker/agent nodes. Agent installation and
-# cluster joining are intentionally not automated by site.yml yet.
+# Worker/agent nodes join the existing control plane. The join token is a
+# secret and must be supplied separately as k3s_agent_token via Ansible Vault
+# or Semaphore's secret Variable Group; never put it in this file or Git.
 node_role: k3s
+
+k3s_agent_server_url: "https://192.168.10.240:6443"
+k3s_agent_version: ""
+
+# Equivalent to: INSTALL_K3S_EXEC="agent --data-dir /mnt/K3S/"
+k3s_agent_install_flags: "agent --data-dir /mnt/K3S/"
