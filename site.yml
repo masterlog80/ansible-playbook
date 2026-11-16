@@ -2,7 +2,7 @@
 # =============================================================================
 # site.yml – System bootstrap playbook
 # =============================================================================
-# Structure: ONE playbook, SEVEN plays.
+# Structure: ONE playbook, EIGHT plays.
 #
 #   1. "System bootstrap (common baseline)" — hosts: all
 #      Runs on every managed node regardless of role: updates, packages,
@@ -21,6 +21,8 @@
 #
 #   5-7. "role_1" / "role_2" / "role_3" — hosts: role_1 / role_2 / role_3
 #      Placeholder roles; only run on hosts in their matching group.
+#   8. "NVMe storage role" — hosts: nvme_present; prepares /dev/nvme0n1
+#      as ext4 and mounts it at /mnt/K3S.
 #
 # A host's ROLE (what gets installed beyond the common baseline) is decided
 # entirely by inventory group membership (inventory/hosts.ini) — not by
@@ -33,6 +35,7 @@
 # Only Docker nodes:          ansible-playbook site.yml --tags docker
 # Only K3S control-plane:      ansible-playbook site.yml --tags k3s_master
 # Only role_1/2/3 nodes:       ansible-playbook site.yml --tags role_1
+# Only NVMe nodes:             ansible-playbook site.yml --tags nvme_present
 # Just one host:               ansible-playbook site.yml --limit node1
 # =============================================================================
 
@@ -1155,3 +1158,15 @@
       ansible.builtin.debug:
         msg: "role_3 applied to {{ inventory_hostname }} (node_role={{ node_role }})"
       tags: [role_3]
+
+# =============================================================================
+# PLAY 8 — NVMe storage role (hosts in [nvme_present])
+# =============================================================================
+# Initializes only a blank disk. Existing GPT partition 1/filesystems are
+# preserved; unexpected layouts and mounts elsewhere fail safely.
+- name: NVMe storage mount role
+  hosts: nvme_present
+  become: true
+  roles:
+    - nvme_present
+  tags: [nvme_present]

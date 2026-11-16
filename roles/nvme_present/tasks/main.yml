@@ -1,0 +1,117 @@
+---
+# This role is deliberately conservative: it only creates a new GPT layout
+# when the target disk has no partition table and no partitions. Existing
+# filesystems are never force-formatted.
+
+- name: Check that the configured NVMe device exists
+  ansible.builtin.stat:
+    path: "{{ nvme_device }}"
+  register: nvme_device_stat
+
+- name: Require the configured NVMe device to be a block device
+  ansible.builtin.assert:
+    that:
+      - nvme_device_stat.stat.exists
+      - nvme_device_stat.stat.isblk | default(false)
+    fail_msg: >-
+      {{ nvme_device }} is not present as a block device. Add only NVMe-equipped
+      hosts to the [nvme_present] inventory group or override nvme_device.
+
+- name: Install disk partitioning and ext4 utilities
+  ansible.builtin.apt:
+    name:
+      - parted
+      - e2fsprogs
+    state: present
+    update_cache: true
+
+- name: Inspect the NVMe partition table
+  community.general.parted:
+    device: "{{ nvme_device }}"
+    unit: MiB
+    state: info
+  register: nvme_disk_info
+
+- name: Refuse to alter an unexpected existing partition layout
+  ansible.builtin.assert:
+    that:
+      - >-
+        (nvme_disk_info.disk.table | default('unknown') == 'unknown'
+         and nvme_disk_info.partitions | length == 0)
+        or
+        (nvme_disk_info.disk.table | default('unknown') == 'gpt'
+         and
+         (nvme_disk_info.partitions
+          | selectattr('num', 'equalto', 1) | list | length == 1
+          or nvme_disk_info.partitions | length == 0))
+    fail_msg: >-
+      {{ nvme_device }} already has a partition layout that this role does not
+      recognize. No partition table or data was changed. Inspect the disk
+      manually before proceeding.
+
+- name: Re-inspect the NVMe partition table
+  community.general.parted:
+    device: "{{ nvme_device }}"
+    unit: MiB
+    state: info
+  register: nvme_disk_info
+
+- name: Create the primary partition when it does not exist
+  community.general.parted:
+    device: "{{ nvme_device }}"
+    label: gpt
+    number: 1
+    part_start: 0%
+    part_end: 100%
+    fs_type: "{{ nvme_filesystem }}"
+    state: present
+  when: >-
+    nvme_disk_info.partitions
+    | selectattr('num', 'equalto', 1) | list | length == 0
+
+- name: Create an ext4 filesystem if the partition has no filesystem
+  community.general.filesystem:
+    fstype: "{{ nvme_filesystem }}"
+    dev: "{{ nvme_partition }}"
+    state: present
+
+- name: Check whether the NVMe partition is already mounted
+  ansible.builtin.command:
+    argv:
+      - findmnt
+      - --noheadings
+      - --output
+      - TARGET
+      - --source
+      - "{{ nvme_partition }}"
+  register: nvme_current_mount
+  changed_when: false
+  failed_when: false
+
+- name: Refuse to move a partition mounted at another path
+  ansible.builtin.assert:
+    that:
+      - nvme_current_mount.rc != 0 or nvme_current_mount.stdout | trim == nvme_mount_path
+    fail_msg: >-
+      {{ nvme_partition }} is already mounted at
+      {{ nvme_current_mount.stdout | trim }}, not {{ nvme_mount_path }}.
+      Unmount or migrate it manually before running this role.
+
+- name: Create the NVMe mount point
+  ansible.builtin.file:
+    path: "{{ nvme_mount_path }}"
+    state: directory
+    owner: root
+    group: root
+    mode: "0755"
+
+- name: Add the NVMe mount to fstab and ensure it is mounted
+  ansible.posix.mount:
+    path: "{{ nvme_mount_path }}"
+    src: "{{ nvme_partition }}"
+    fstype: "{{ nvme_filesystem }}"
+    opts: "{{ nvme_mount_options }}"
+    dump: "0"
+    passno: "2"
+    fstab: /etc/fstab
+    state: mounted

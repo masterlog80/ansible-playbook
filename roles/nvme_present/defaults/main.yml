@@ -1,0 +1,7 @@
+---
+# NVMe device and mount configuration for the nvme_present role.
+nvme_device: /dev/nvme0n1
+nvme_partition: /dev/nvme0n1p1
+nvme_mount_path: /mnt/K3S
+nvme_filesystem: ext4
+nvme_mount_options: defaults
