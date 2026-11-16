@@ -40,3 +40,11 @@ admin_user_password_hash: '$6$REPLACE_ME'
 # you a way in if github.com is unreachable when the playbook runs.
 # additional_authorized_keys:
 #   - "ssh-ed25519 AAAA... backup-key"
+
+# K3S worker/agent join token. Store the REAL value only in the encrypted
+# group_vars/all/vault.yml or as a secret variable in Semaphore. This is only
+# a placeholder; replace it before running the k3s_agent tag.
+# Prefer the dedicated agent token from the K3S server:
+#   sudo cat /var/lib/rancher/k3s/server/agent-token
+# Do not commit a real cluster token to Git.
+k3s_agent_token: "REPLACE_WITH_K3S_AGENT_TOKEN"
