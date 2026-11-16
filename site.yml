@@ -118,6 +118,15 @@
         autoclean: true
       tags: [baseline, update]
 
+    # Orange Pi's MOTD update script reads this cached count instead of
+    # querying APT at login. Remove it after upgrading so stale counts do
+    # not survive a successful package update.
+    - name: Remove stale Orange Pi update notification cache
+      ansible.builtin.file:
+        path: /var/cache/apt/archives/updates.number
+        state: absent
+      tags: [baseline, update]
+
     # -------------------------------------------------------------------------
     # 2. Package Installation
     # -------------------------------------------------------------------------
