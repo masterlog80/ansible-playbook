@@ -2,6 +2,11 @@
 # =============================================================================
 # Variables for hosts in [k3s_nodes]
 # =============================================================================
-# This group is reserved for K3S worker/agent nodes. Agent installation and
-# cluster joining are intentionally not automated by site.yml yet.
-node_role: k3s
+# K3S worker/agent nodes join the existing control plane. The token is never
+# stored here: Semaphore injects it at task runtime as K3S_AGENT_TOKEN.
+node_role: k3s_agent
+
+k3s_agent_server_url: "https://192.168.10.240:6443"
+k3s_agent_data_dir: "/mnt/K3S/"
+# Empty means use the latest stable version, matching the installer's default.
+k3s_agent_version: ""
