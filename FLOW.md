@@ -148,7 +148,7 @@ Runs after PLAY 2, only on hosts in the `[k3s_master]` inventory group.
 
 Runs only on hosts in `[k3s_nodes]`, after the control-plane play.
 
-1. Assert that the Semaphore task environment contains `K3S_AGENT_TOKEN`; fail before attempting installation if it is absent.
+1. Check whether `/etc/systemd/system/k3s-agent.service` already exists. If the agent is not installed, assert that the Semaphore task environment contains `K3S_AGENT_TOKEN`; fail before attempting installation if it is absent.
 2. Download the official K3S install script.
 3. Install the agent with `K3S_URL` from `group_vars/k3s_nodes.yml`, the token read from the task environment, and `INSTALL_K3S_EXEC="agent --data-dir /mnt/K3S/"`. The command is hidden from task logs because its environment contains the token.
 4. Use the presence of `/etc/systemd/system/k3s-agent.service` as the idempotency guard, so an already-installed agent is not reinstalled.
@@ -158,7 +158,7 @@ The token is never defined in inventory, group vars, or any repository file. Con
 
 ## PLAYS 5–7 — `role_1` / `role_2` / `role_3` (placeholder roles)
 
-Each runs after PLAY 3, only on hosts in its matching inventory group (`[role_1]`, `[role_2]`, `[role_3]`). Currently each is a single `debug` task proving the pattern — see README's "Adding a new role" section for how to replace these with real work.
+Each runs after PLAY 4, only on hosts in its matching inventory group (`[role_1]`, `[role_2]`, `[role_3]`). Currently each is a single `debug` task proving the pattern — see README's "Adding a new role" section for how to replace these with real work.
 
 ---
 
