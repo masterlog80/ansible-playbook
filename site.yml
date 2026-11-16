@@ -666,6 +666,19 @@
     # -------------------------------------------------------------------------
     # 11. ZSH – Oh My Zsh, Powerlevel10k, plugins (for every user in zsh_users)
     # -------------------------------------------------------------------------
+    - name: Remove obsolete system-wide Oh My Zsh configuration
+      # Older installations may have added a global Oh My Zsh stanza to the
+      # package-managed /etc/zsh/zshrc. The current setup installs Oh My Zsh
+      # per user, so remove only that legacy stanza and preserve other settings.
+      ansible.builtin.replace:
+        path: /etc/zsh/zshrc
+        regexp: '(?ms)^export ZSH="/usr/share/oh-my-zsh"\r?\n.*?^source \$ZSH/oh-my-zsh\.sh[ \t]*\r?\n?'
+        replace: ""
+        backup: true
+        validate: "/usr/bin/zsh -n %s"
+      become: true
+      tags: [baseline, zsh]
+
     - name: Check if Oh My Zsh startup script is installed
       # Check the actual entry point sourced by .zshrc, not just the directory.
       # A previous/incomplete install can leave .oh-my-zsh present without this file.
