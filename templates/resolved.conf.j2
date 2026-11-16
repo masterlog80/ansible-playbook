@@ -1,7 +1,10 @@
 # Managed by Ansible – do not edit manually.
 # Template: templates/resolved.conf.j2
 [Resolve]
-DNS={{ dns_servers | join(' ') }}
+# DNS servers are configured per interface by Netplan (templates/netplan.yml.j2).
+# Do not also set the global DNS= option here: systemd-resolved would expose
+# both the global and per-link DNS lists in /run/systemd/resolve/resolv.conf,
+# resulting in every server appearing twice.
 Domains={{ dns_search_domain }}
 # Frees up port 53 so dnsmasq (or any other local DNS server) can bind to it
 # without conflicting with systemd-resolved's own stub listener.
