@@ -2,14 +2,6 @@
 # =============================================================================
 # Variables for hosts in [k3s_nodes]
 # =============================================================================
+# This group is reserved for K3S worker/agent nodes. Agent installation and
+# cluster joining are intentionally not automated by site.yml yet.
 node_role: k3s
-
-# Set to a specific version (e.g. "v1.29.3+k3s1") or leave empty for latest.
-k3s_version: ""
-
-# Extra flags passed to the K3S installer (e.g. "--disable traefik").
-# Use this to distinguish server vs agent nodes if/when you split those out,
-# e.g. "--disable traefik" on the first server, "K3S_URL=... K3S_TOKEN=..."
-# style flags via env for agents (see site.yml comments for how flags map to
-# the installer's INSTALL_K3S_EXEC / K3S_URL / K3S_TOKEN environment vars).
-k3s_install_flags: ""
