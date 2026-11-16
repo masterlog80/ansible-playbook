@@ -17,6 +17,26 @@
       {{ nvme_device }} is not present as a block device. Add only NVMe-equipped
       hosts to the [nvme_present] inventory group or override nvme_device.
 
+- name: Read the NVMe device capacity in bytes
+  ansible.builtin.command:
+    argv:
+      - blockdev
+      - --getsize64
+      - "{{ nvme_device }}"
+  register: nvme_device_size
+  changed_when: false
+
+- name: Require a 128 GB-class NVMe device before making any disk changes
+  ansible.builtin.assert:
+    that:
+      - nvme_device_size.stdout | int >= nvme_expected_size_min_bytes
+      - nvme_device_size.stdout | int < nvme_expected_size_max_bytes
+    fail_msg: >-
+      {{ nvme_device }} has {{ nvme_device_size.stdout | int }} bytes;
+      this host is enabled for the nvme_present role only with a 128 GB-class
+      device ({{ nvme_expected_size_min_bytes }} to
+      {{ nvme_expected_size_max_bytes - 1 }} bytes). No disk changes were made.
+
 - name: Install disk partitioning and ext4 utilities
   ansible.builtin.apt:
     name:
