@@ -1079,7 +1079,13 @@
   tags: [k3s_nodes]
 
   pre_tasks:
-    - name: Ensure Semaphore supplied the K3S agent token
+    - name: Check whether the K3S agent service is already installed
+      ansible.builtin.stat:
+        path: /etc/systemd/system/k3s-agent.service
+      register: k3s_agent_service_file
+      tags: [k3s_nodes]
+
+    - name: Ensure Semaphore supplied the K3S agent token for a new installation
       ansible.builtin.assert:
         that:
           - lookup('ansible.builtin.env', 'K3S_AGENT_TOKEN') | length > 0
@@ -1087,6 +1093,7 @@
           K3S_AGENT_TOKEN is missing. Add it to the Semaphore Variable Group
           as a secret of type Environment variable and attach that group to
           the task template. See SETTINGS.md.
+      when: not k3s_agent_service_file.stat.exists
       tags: [k3s_nodes]
 
   tasks:
@@ -1095,6 +1102,7 @@
         url: https://get.k3s.io
         dest: /tmp/k3s-install.sh
         mode: "0755"
+      when: not k3s_agent_service_file.stat.exists
       tags: [k3s_nodes]
 
     - name: Install K3S agent and join the existing control plane
