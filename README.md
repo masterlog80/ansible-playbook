@@ -1,6 +1,6 @@
 # ansible-playbook
 
-An Ansible playbook that bootstraps a fleet of Debian/Ubuntu nodes from a fresh OS image to a fully configured, role-specific state — system updates, hardening, users, networking, shell setup — plus a per-node choice of **K3S**, **Docker**, both, or neither, driven entirely by inventory group membership.
+An Ansible playbook that bootstraps a fleet of Debian/Ubuntu nodes from a fresh OS image to a fully configured, role-specific state — system updates, hardening, users, networking, shell setup — plus optional **K3S control-plane** and **Docker** setup, driven by inventory group membership.
 
 > 📋 Literal, in-order list of every operation → [FLOW.md](FLOW.md)
 > ⚙️ Semaphore UI setup for this repo → [SETTINGS.md](SETTINGS.md)
@@ -12,7 +12,7 @@ An Ansible playbook that bootstraps a fleet of Debian/Ubuntu nodes from a fresh 
 - 🔄 **Updates** – `apt update` + dist-upgrade, wrapped in `apt --fix-broken`
 - 📦 **Packages** – curated list in `group_vars/all/vars.yml`
 - 💾 **Swap disabled** – required for K3S, applied to every node
-- ☸️ **K3S** – official installer, version/flags configurable
+- ☸️ **K3S control-plane** – official installer, version/flags configurable; installed only on hosts in `[k3s_master]`
 - ☸️ **K3S control-plane** – `--disable traefik/servicelb/metrics-server`, taints the node, installs FluxCD + Helm
 - 🐳 **Docker** – official apt repo (auto-selects `ubuntu`/`debian`), Compose plugin, admin user added to the `docker` group
 - 💽 **NVMe storage** – conservative `nvme_present` role creates an ext4 partition on a blank `/dev/nvme0n1` and mounts it at `/mnt/K3S`; preserves existing filesystems
@@ -77,7 +77,7 @@ ansible-playbook site.yml --tags docker      # just one role, all hosts in it
 | `zsh_users` | `lorenzo` + `root` | Who gets Oh My Zsh |
 | `subnet_prefix` / `gateway` | `24` / `192.168.10.1` | Static IP defaults |
 
-Per-role files: `group_vars/k3s_nodes.yml` (`k3s_version`, `k3s_install_flags`), `docker_nodes.yml` (`docker_channel`, `docker_packages`), `nvme_present` role defaults (`nvme_device`, `nvme_partition`, `nvme_mount_path`), `k3s_master.yml` (control-plane flags, `fluxcd_version`, `helm_version`). `host_vars/<node>.yml` overrides `static_ip` per host.
+Per-role files: `group_vars/k3s_master.yml` (K3S version/control-plane flags, taint effect, `fluxcd_version`, `helm_version`), `docker_nodes.yml` (`docker_channel`, `docker_packages`), and `nvme_present` role defaults (`nvme_device`, `nvme_partition`, `nvme_mount_path`). `group_vars/k3s_nodes.yml` only classifies worker/agent nodes; worker installation and cluster joining are not automated. `host_vars/<node>.yml` overrides `static_ip` per host.
 
 ---
 
@@ -88,13 +88,13 @@ One playbook (`site.yml`), one play per role. A host's role(s) come from its inv
 | Play | Group | Does |
 |---|---|---|
 | Baseline | `all` | Updates, packages, swap, timezone, NTP, DNS, udev rules, disabled services, users, SSH hardening, zsh, console login, static IP, hostname |
-| K3S | `k3s_nodes` | Installs K3S |
+| K3S worker/agent classification | `k3s_nodes` | Reserved for worker nodes; installation and cluster joining are not automated |
 | Docker | `docker_nodes` | Installs Docker Engine + Compose |
 | NVMe storage | `nvme_present` | Safely prepares a blank NVMe disk as ext4 and mounts it at `/mnt/K3S` |
-| K3S control-plane | `k3s_master` | K3S with control-plane flags, taint, FluxCD, Helm |
+| K3S control-plane | `k3s_master` | Installs K3S with control-plane flags, taint, FluxCD and Helm |
 | `role_1` / `role_2` / `role_3` | matching group | Placeholders — replace with real work when needed |
 
-A host can be in any combination of groups (baseline-only is fine too). See "Adding a role" below to add another.
+K3S installation runs only for hosts in `[k3s_master]`. `[k3s_nodes]` is reserved for worker/agent classification; worker installation and joining an existing cluster are not yet automated. A host can be in any combination of the other role groups (baseline-only is fine too). See "Adding a role" below to add another.
 
 ---
 
@@ -136,10 +136,10 @@ The run fails fast if either hash is missing or isn't a real crypt hash. `additi
 |---|---|---|
 | `baseline` | all | everything in the common play |
 | `packages`, `swap`, `timezone`, `ntp`, `dns`, `udev`, `sysstat`, `nvmf`, `users`, `ssh`, `zsh`, `console`, `network`, `hostname` | all | that one baseline section |
-| `k3s` | `k3s_nodes` | K3S install |
+| `k3s_master` | `k3s_master` | K3S control-plane install |
 | `docker` | `docker_nodes` | Docker install |
 | `nvme_present` | `nvme_present` | NVMe partition, filesystem and mount |
-| `k3s_master`, `fluxcd`, `helm` | `k3s_master` | control-plane / just Flux / just Helm |
+| `fluxcd`, `helm` | `k3s_master` | just Flux / just Helm |
 | `role_1` / `role_2` / `role_3` | matching group | placeholder task |
 
 ```bash
