@@ -16,7 +16,13 @@ plugins=(
 {% endfor %}
 )
 
-source "$ZSH/oh-my-zsh.sh"
+# Do not break interactive login if an earlier Oh My Zsh install was
+# interrupted. The Ansible zsh tasks will repair the installation on rerun.
+if [[ -r "$ZSH/oh-my-zsh.sh" ]]; then
+  source "$ZSH/oh-my-zsh.sh"
+else
+  print -P "%F{yellow}Oh My Zsh is missing; run the Ansible bootstrap to repair it.%f"
+fi
 
 # Load Powerlevel10k config if it exists.
 [[ -f ~/.p10k.zsh ]] && source ~/.p10k.zsh
