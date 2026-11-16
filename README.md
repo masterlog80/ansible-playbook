@@ -15,6 +15,7 @@ An Ansible playbook that bootstraps a fleet of Debian/Ubuntu nodes from a fresh 
 - ☸️ **K3S** – official installer, version/flags configurable
 - ☸️ **K3S control-plane** – `--disable traefik/servicelb/metrics-server`, taints the node, installs FluxCD + Helm
 - 🐳 **Docker** – official apt repo (auto-selects `ubuntu`/`debian`), Compose plugin, admin user added to the `docker` group
+- 💽 **NVMe storage** – conservative `nvme_present` role creates an ext4 partition on a blank `/dev/nvme0n1` and mounts it at `/mnt/K3S`; preserves existing filesystems
 - 🕐 **Timezone / NTP** – Chrony or systemd-timesyncd, auto-detected or forced
 - 🌐 **DNS** – `systemd-resolved` with custom servers, stub listener disabled for local-resolver compatibility
 - 🔌 **udev rules** – GSM modem (Qualcomm) + UPS (OMRON, APC)
@@ -76,7 +77,7 @@ ansible-playbook site.yml --tags docker      # just one role, all hosts in it
 | `zsh_users` | `lorenzo` + `root` | Who gets Oh My Zsh |
 | `subnet_prefix` / `gateway` | `24` / `192.168.10.1` | Static IP defaults |
 
-Per-role files: `group_vars/k3s_nodes.yml` (`k3s_version`, `k3s_install_flags`), `docker_nodes.yml` (`docker_channel`, `docker_packages`), `k3s_master.yml` (control-plane flags, `fluxcd_version`, `helm_version`). `host_vars/<node>.yml` overrides `static_ip` per host.
+Per-role files: `group_vars/k3s_nodes.yml` (`k3s_version`, `k3s_install_flags`), `docker_nodes.yml` (`docker_channel`, `docker_packages`), `nvme_present` role defaults (`nvme_device`, `nvme_partition`, `nvme_mount_path`), `k3s_master.yml` (control-plane flags, `fluxcd_version`, `helm_version`). `host_vars/<node>.yml` overrides `static_ip` per host.
 
 ---
 
@@ -89,6 +90,7 @@ One playbook (`site.yml`), one play per role. A host's role(s) come from its inv
 | Baseline | `all` | Updates, packages, swap, timezone, NTP, DNS, udev rules, disabled services, users, SSH hardening, zsh, console login, static IP, hostname |
 | K3S | `k3s_nodes` | Installs K3S |
 | Docker | `docker_nodes` | Installs Docker Engine + Compose |
+| NVMe storage | `nvme_present` | Safely prepares a blank NVMe disk as ext4 and mounts it at `/mnt/K3S` |
 | K3S control-plane | `k3s_master` | K3S with control-plane flags, taint, FluxCD, Helm |
 | `role_1` / `role_2` / `role_3` | matching group | Placeholders — replace with real work when needed |
 
@@ -136,6 +138,7 @@ The run fails fast if either hash is missing or isn't a real crypt hash. `additi
 | `packages`, `swap`, `timezone`, `ntp`, `dns`, `udev`, `sysstat`, `nvmf`, `users`, `ssh`, `zsh`, `console`, `network`, `hostname` | all | that one baseline section |
 | `k3s` | `k3s_nodes` | K3S install |
 | `docker` | `docker_nodes` | Docker install |
+| `nvme_present` | `nvme_present` | NVMe partition, filesystem and mount |
 | `k3s_master`, `fluxcd`, `helm` | `k3s_master` | control-plane / just Flux / just Helm |
 | `role_1` / `role_2` / `role_3` | matching group | placeholder task |
 
@@ -148,9 +151,11 @@ ansible-playbook site.yml --tags network,hostname
 ## Adding a role
 
 1. Add a group to `inventory/hosts.ini`.
-2. Add `group_vars/<group>.yml` for its variables.
-3. Add a new play to `site.yml`, `hosts: <group>`, tagged with the role name.
+2. Add `group_vars/<group>.yml` or role defaults for its variables.
+3. Add a role under `roles/<role_name>/` and a play to `site.yml`, `hosts: <group>`, tagged with the role name.
 4. Document it (Features, Configuration, Tags above).
+
+For NVMe storage, add only hosts with a dedicated `/dev/nvme0n1` disk to `[nvme_present]`. The role creates a GPT table and partition only on a blank disk; it will not overwrite an existing filesystem, and it stops on an unexpected partition layout or if the partition is mounted elsewhere.
 
 A host can belong to several groups at once — every matching play runs, in the order plays appear in `site.yml`. Check what a host will run with:
 
