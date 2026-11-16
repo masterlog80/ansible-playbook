@@ -2,7 +2,7 @@
 # =============================================================================
 # site.yml – System bootstrap playbook
 # =============================================================================
-# Structure: ONE playbook, SEVEN plays.
+# Structure: ONE playbook, EIGHT plays.
 #
 #   1. "System bootstrap (common baseline)" — hosts: all
 #      Runs on every managed node regardless of role: updates, packages,
@@ -20,6 +20,8 @@
 #      Placeholder roles; only run on hosts in their matching group.
 #   7. "NVMe storage role" — hosts: nvme_present; prepares /dev/nvme0n1
 #      as ext4 and mounts it at /mnt/K3S.
+#   8. "K3S worker/agent role" — hosts: k3s_nodes; joins the control plane
+#      using a secret token and /mnt/K3S as its data directory.
 #
 # A host's ROLE (what gets installed beyond the common baseline) is decided
 # entirely by inventory group membership (inventory/hosts.ini) — not by
@@ -30,6 +32,7 @@
 # Only the baseline:         ansible-playbook site.yml --tags baseline
 # Only Docker nodes:          ansible-playbook site.yml --tags docker
 # Only K3S control-plane:      ansible-playbook site.yml --tags k3s_master
+# Only K3S agents:              ansible-playbook site.yml --tags k3s_agent
 # Only role_1/2/3 nodes:       ansible-playbook site.yml --tags role_1
 # Only NVMe nodes:             ansible-playbook site.yml --tags nvme_present
 # Just one host:               ansible-playbook site.yml --limit node1
@@ -1070,6 +1073,7 @@
       tags: [k3s_master, helm]
 
 # =============================================================================
+# =============================================================================
 # PLAY 4 — role_1 (hosts in [role_1])
 # =============================================================================
 # Placeholder role added to demonstrate/exercise the pattern described in
@@ -1137,3 +1141,81 @@
   roles:
     - nvme_present
   tags: [nvme_present]
+
+# PLAY 8 — K3S worker/agent role (hosts in [k3s_nodes])
+# =============================================================================
+# Runs after NVMe storage so /mnt/K3S is mounted before K3s uses it.
+- name: K3S worker/agent role
+  hosts: k3s_nodes
+  become: true
+  tags: [k3s_agent]
+
+  pre_tasks:
+    - name: Check whether the K3S agent service is already installed
+      ansible.builtin.stat:
+        path: /etc/systemd/system/k3s-agent.service
+      register: k3s_agent_service
+      tags: [k3s_agent]
+
+    - name: Check whether the K3S server service is already installed
+      ansible.builtin.stat:
+        path: /etc/systemd/system/k3s.service
+      register: k3s_agent_server_service
+      tags: [k3s_agent]
+
+    - name: Ensure this host is not already configured as a K3S server
+      ansible.builtin.assert:
+        that:
+          - not k3s_agent_server_service.stat.exists
+        fail_msg: >-
+          This host already has the K3S server service. Refusing to convert
+          it automatically into an agent.
+      when: not k3s_agent_service.stat.exists
+      tags: [k3s_agent]
+
+    - name: Ensure the K3S agent token is supplied for a new agent
+      ansible.builtin.assert:
+        that:
+          - k3s_agent_token is defined
+          - k3s_agent_token | length > 0
+        fail_msg: >-
+          Set k3s_agent_token as a secret variable in Ansible Vault or
+          Semaphore's secret Variable Group. Do not commit the token.
+      when: not k3s_agent_service.stat.exists
+      no_log: true
+      tags: [k3s_agent]
+
+    - name: Check that /mnt/K3S is a mounted filesystem
+      ansible.builtin.command: mountpoint -q /mnt/K3S
+      changed_when: false
+      tags: [k3s_agent]
+
+  tasks:
+    - name: Download K3S install script for the agent
+      ansible.builtin.get_url:
+        url: https://get.k3s.io
+        dest: /tmp/k3s-install.sh
+        mode: "0755"
+      when: not k3s_agent_service.stat.exists
+      tags: [k3s_agent]
+
+    - name: Install or join K3S agent to the existing control plane
+      ansible.builtin.command: /tmp/k3s-install.sh
+      environment:
+        K3S_URL: "{{ k3s_agent_server_url }}"
+        K3S_TOKEN: "{{ k3s_agent_token | default('') }}"
+        INSTALL_K3S_VERSION: "{{ k3s_agent_version }}"
+        INSTALL_K3S_EXEC: "{{ k3s_agent_install_flags }}"
+      args:
+        creates: /etc/systemd/system/k3s-agent.service
+      when: not k3s_agent_service.stat.exists
+      no_log: true
+      tags: [k3s_agent]
+
+    - name: Ensure K3S agent service is running and enabled
+      ansible.builtin.service:
+        name: k3s-agent
+        state: started
+        enabled: true
+      tags: [k3s_agent]
+
