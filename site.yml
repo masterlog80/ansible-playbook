@@ -1125,7 +1125,7 @@
       tags: [k3s_nodes]
 
 # =============================================================================
-# PLAY 4 — role_1 (hosts in [role_1])
+# PLAY 5 — role_1 (hosts in [role_1])
 # =============================================================================
 # Placeholder role added to demonstrate/exercise the pattern described in
 # README.md ("Adding a new role"). Replace the placeholder task below with
