@@ -162,3 +162,16 @@ Each runs after PLAY 4, only on hosts in its matching inventory group (`[role_1]
 - **SSH lockdown (baseline steps 47–54) runs *after* user creation, password setup, sudo rules and key import (steps 34–39).** This is deliberate: the very first run on a brand-new node connects as `root` + password (since `{{ admin_user }}` doesn't exist yet to connect as), and that run needs to create `{{ admin_user }}`, install its key, set the passwords and sudo rules *before* disabling root SSH — otherwise the node would be locked out mid-run. See README's "SSH access" section for the full two-phase credential model.
 - **The `Match User {{ admin_user }}` MaxAuthTries block (step 54) is always the last thing appended to `sshd_config`.** Any future task that edits `sshd_config` must come *before* it (or use `insertafter`/an anchor to a known earlier directive) — anything appended after it via a bare `blockinfile`/`lineinfile` default (EOF) would be incorrectly scoped inside that `Match` block instead of applying globally. Step 53 (`AllowUsers`) already does this correctly, anchored with `insertafter: '^PasswordAuthentication'`.
 - **A host can belong to more than one role group** (`k3s_nodes`, `docker_nodes`, `k3s_master`, `role_1`–`role_3`), and gets every matching play in the order shown above (PLAY 2 → 3 → 4 → 5 → 6 → 7). Don't put the same host in both `k3s_nodes` and `k3s_master` — whichever K3S install runs first wins the install flags (the second is skipped via its `creates:` guard).
+
+
+## PLAY 8 — NVMe storage role (`nvme_present`)
+
+**Runs on:** hosts explicitly listed in `[nvme_present]`. The default target is `/dev/nvme0n1`, mounted at `/mnt/K3S`.
+
+1. Verify that the target exists and is a block device.
+2. Install `parted` and `e2fsprogs`.
+3. Inspect the partition table. A new GPT table is created only when the disk is blank; an existing GPT partition 1 is reused. Other layouts fail safely.
+4. Create partition 1 spanning the disk only if it does not already exist.
+5. Create an ext4 filesystem only if the partition has no filesystem signature; an existing filesystem is not force-formatted.
+6. Check that the partition is not mounted at a different path.
+7. Create `/mnt/K3S`, add/update its `/etc/fstab` entry, and ensure it is mounted with ext4 and `defaults`. Re-runs leave an already-correct mount unchanged.
