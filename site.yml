@@ -704,8 +704,8 @@
     - name: Install Oh My Zsh
       # Run the upstream installer in unattended mode. KEEP_ZSHRC=yes preserves
       # the Ansible-managed .zshrc; the template task below remains authoritative.
-      # The explicit task timeout prevents an installer/network hang from
-      # blocking the entire bootstrap indefinitely.
+      # Async execution with polling imposes a hard 120-second limit, so a
+      # stalled installer cannot block the entire bootstrap indefinitely.
       ansible.builtin.command:
         argv:
           - sh
