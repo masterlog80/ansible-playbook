@@ -1151,20 +1151,10 @@
   tags: [k3s_agent]
 
   pre_tasks:
-    - name: Ensure the K3S agent token is supplied
-      ansible.builtin.assert:
-        that:
-          - k3s_agent_token is defined
-          - k3s_agent_token | length > 0
-        fail_msg: >-
-          Set k3s_agent_token as a secret variable in Ansible Vault or
-          Semaphore's secret Variable Group. Do not commit the token.
-      no_log: true
-      tags: [k3s_agent]
-
-    - name: Check that /mnt/K3S is a mounted filesystem
-      ansible.builtin.command: mountpoint -q /mnt/K3S
-      changed_when: false
+    - name: Check whether the K3S agent service is already installed
+      ansible.builtin.stat:
+        path: /etc/systemd/system/k3s-agent.service
+      register: k3s_agent_service
       tags: [k3s_agent]
 
     - name: Check whether the K3S server service is already installed
@@ -1180,6 +1170,24 @@
         fail_msg: >-
           This host already has the K3S server service. Refusing to convert
           it automatically into an agent.
+      when: not k3s_agent_service.stat.exists
+      tags: [k3s_agent]
+
+    - name: Ensure the K3S agent token is supplied for a new agent
+      ansible.builtin.assert:
+        that:
+          - k3s_agent_token is defined
+          - k3s_agent_token | length > 0
+        fail_msg: >-
+          Set k3s_agent_token as a secret variable in Ansible Vault or
+          Semaphore's secret Variable Group. Do not commit the token.
+      when: not k3s_agent_service.stat.exists
+      no_log: true
+      tags: [k3s_agent]
+
+    - name: Check that /mnt/K3S is a mounted filesystem
+      ansible.builtin.command: mountpoint -q /mnt/K3S
+      changed_when: false
       tags: [k3s_agent]
 
   tasks:
@@ -1188,17 +1196,19 @@
         url: https://get.k3s.io
         dest: /tmp/k3s-install.sh
         mode: "0755"
+      when: not k3s_agent_service.stat.exists
       tags: [k3s_agent]
 
     - name: Install or join K3S agent to the existing control plane
       ansible.builtin.command: /tmp/k3s-install.sh
       environment:
         K3S_URL: "{{ k3s_agent_server_url }}"
-        K3S_TOKEN: "{{ k3s_agent_token }}"
+        K3S_TOKEN: "{{ k3s_agent_token | default('') }}"
         INSTALL_K3S_VERSION: "{{ k3s_agent_version }}"
         INSTALL_K3S_EXEC: "{{ k3s_agent_install_flags }}"
       args:
         creates: /etc/systemd/system/k3s-agent.service
+      when: not k3s_agent_service.stat.exists
       no_log: true
       tags: [k3s_agent]
 
