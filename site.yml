@@ -691,19 +691,38 @@
       when: not item.stat.exists
       tags: [baseline, zsh]
 
+    - name: Download Oh My Zsh installer
+      ansible.builtin.get_url:
+        url: https://raw.githubusercontent.com/ohmyzsh/ohmyzsh/master/tools/install.sh
+        dest: /tmp/ohmyzsh-install.sh
+        owner: root
+        group: root
+        mode: "0644"
+        timeout: 15
+      timeout: 90
+      tags: [baseline, zsh]
+
     - name: Install Oh My Zsh
-      # Security note: the installer is fetched from the official ohmyzsh repo.
-      # RUNZSH=no and CHSH=no prevent the script from switching the shell
-      # interactively; the shell is already set via the user module above.
-      ansible.builtin.shell: |
-        RUNZSH=no CHSH=no \
-        sh -c "$(curl -fsSL https://raw.githubusercontent.com/ohmyzsh/ohmyzsh/master/tools/install.sh)"
+      # Run the upstream installer in unattended mode. KEEP_ZSHRC=yes preserves
+      # the Ansible-managed .zshrc; the template task below remains authoritative.
+      # The explicit task timeout prevents an installer/network hang from
+      # blocking the entire bootstrap indefinitely.
+      ansible.builtin.command:
+        argv:
+          - sh
+          - /tmp/ohmyzsh-install.sh
+          - --unattended
       become: true
       become_user: "{{ item.item.name }}"
       environment:
         HOME: "{{ item.item.home }}"
+        RUNZSH: "no"
+        CHSH: "no"
+        KEEP_ZSHRC: "yes"
+        OVERWRITE_CONFIRMATION: "no"
       args:
         creates: "{{ item.item.home }}/.oh-my-zsh/oh-my-zsh.sh"
+      timeout: 120
       loop: "{{ omzsh_stat.results }}"
       loop_control:
         label: "{{ item.item.name }}"
@@ -741,9 +760,32 @@
         update: false
       become: true
       become_user: "{{ item.name }}"
+      timeout: 180
       loop: "{{ zsh_users }}"
       loop_control:
         label: "{{ item.name }}"
+      tags: [baseline, zsh]
+
+    - name: Verify Powerlevel10k theme is installed
+      ansible.builtin.stat:
+        path: "{{ item.home }}/.oh-my-zsh/custom/themes/powerlevel10k/powerlevel10k.zsh-theme"
+      become: true
+      become_user: "{{ item.name }}"
+      register: p10k_verify
+      loop: "{{ zsh_users }}"
+      loop_control:
+        label: "{{ item.name }}"
+      tags: [baseline, zsh]
+
+    - name: Fail if Powerlevel10k installation is incomplete
+      ansible.builtin.assert:
+        that:
+          - item.stat.exists
+          - item.stat.isreg
+        fail_msg: "Powerlevel10k installation failed for {{ item.item.name }}: {{ item.item.home }}/.oh-my-zsh/custom/themes/powerlevel10k/powerlevel10k.zsh-theme is missing."
+      loop: "{{ p10k_verify.results }}"
+      loop_control:
+        label: "{{ item.item.name }}"
       tags: [baseline, zsh]
 
     - name: Clone external zsh plugins (zsh-syntax-highlighting, zsh-autosuggestions)
@@ -755,6 +797,7 @@
         update: false
       become: true
       become_user: "{{ item.0.name }}"
+      timeout: 180
       with_nested:
         - "{{ zsh_users }}"
         - "{{ zsh_external_plugins }}"
