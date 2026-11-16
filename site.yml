@@ -672,7 +672,7 @@
       # per user, so remove only that legacy stanza and preserve other settings.
       ansible.builtin.replace:
         path: /etc/zsh/zshrc
-        regexp: '(?ms)^export ZSH="/usr/share/oh-my-zsh"\\r?\\n.*?^source \\$ZSH/oh-my-zsh\\.sh[ \\t]*\\r?\\n?'
+        regexp: '(?ms)^export ZSH="/usr/share/oh-my-zsh"\r?\n.*?^source \$ZSH/oh-my-zsh\.sh[ \t]*\r?\n?'
         replace: ""
         backup: true
         validate: "/usr/bin/zsh -n %s"
