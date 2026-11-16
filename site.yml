@@ -20,8 +20,8 @@
 #      Placeholder roles; only run on hosts in their matching group.
 #   7. "NVMe storage role" — hosts: nvme_present; prepares /dev/nvme0n1
 #      as ext4 and mounts it at /mnt/K3S.
-#   8. "K3S worker/agent role" — hosts: k3s_nodes; joins the control plane
-#      using a secret token and /mnt/K3S as its data directory.
+#   8. "K3S worker/agent role" — hosts: k3s_nodes; installs or updates the
+#      agent using a secret token and /mnt/K3S as its data directory.
 #
 # A host's ROLE (what gets installed beyond the common baseline) is decided
 # entirely by inventory group membership (inventory/hosts.ini) — not by
@@ -987,20 +987,13 @@
   tags: [k3s_master]
 
   tasks:
-    - name: Download K3S install script
-      ansible.builtin.get_url:
-        url: https://get.k3s.io
-        dest: /tmp/k3s-install.sh
-        mode: "0755"
-      tags: [k3s_master]
-
-    - name: Run K3S install script (control-plane flags)
-      ansible.builtin.command: /tmp/k3s-install.sh
+    - name: Update K3S control-plane to the latest version
+      ansible.builtin.shell: set -o pipefail && curl -sfL https://get.k3s.io | sh -
+      args:
+        executable: /bin/bash
       environment:
         INSTALL_K3S_VERSION: "{{ k3s_master_version }}"
         INSTALL_K3S_EXEC: "{{ k3s_master_install_flags }}"
-      args:
-        creates: /usr/local/bin/k3s
       tags: [k3s_master]
 
     # The inner --timeout is deliberately short (a few seconds); the outer
@@ -1173,7 +1166,7 @@
       when: not k3s_agent_service.stat.exists
       tags: [k3s_agent]
 
-    - name: Ensure the K3S agent token is supplied for a new agent
+    - name: Ensure the K3S agent token is supplied for installation or update
       ansible.builtin.assert:
         that:
           - k3s_agent_token is defined
@@ -1181,7 +1174,6 @@
         fail_msg: >-
           Set k3s_agent_token as a secret variable in Ansible Vault or
           Semaphore's secret Variable Group. Do not commit the token.
-      when: not k3s_agent_service.stat.exists
       no_log: true
       tags: [k3s_agent]
 
@@ -1191,24 +1183,15 @@
       tags: [k3s_agent]
 
   tasks:
-    - name: Download K3S install script for the agent
-      ansible.builtin.get_url:
-        url: https://get.k3s.io
-        dest: /tmp/k3s-install.sh
-        mode: "0755"
-      when: not k3s_agent_service.stat.exists
-      tags: [k3s_agent]
-
-    - name: Install or join K3S agent to the existing control plane
-      ansible.builtin.command: /tmp/k3s-install.sh
+    - name: Update K3S agent to the latest version
+      ansible.builtin.shell: set -o pipefail && curl -sfL https://get.k3s.io | sh -
+      args:
+        executable: /bin/bash
       environment:
         K3S_URL: "{{ k3s_agent_server_url }}"
-        K3S_TOKEN: "{{ k3s_agent_token | default('') }}"
+        K3S_TOKEN: "{{ k3s_agent_token }}"
         INSTALL_K3S_VERSION: "{{ k3s_agent_version }}"
         INSTALL_K3S_EXEC: "{{ k3s_agent_install_flags }}"
-      args:
-        creates: /etc/systemd/system/k3s-agent.service
-      when: not k3s_agent_service.stat.exists
       no_log: true
       tags: [k3s_agent]
 
