@@ -5,4 +5,4 @@ static_ip: 192.168.10.243
 network_interface: eth0
 gateway: 192.168.10.1
 subnet_prefix: 24
-hostname: K3S-NODE-03
+hostname: k3s-node-03

@@ -156,7 +156,7 @@ ansible-playbook site.yml --tags network,hostname
 3. Add a role under `roles/<role_name>/` and a play to `site.yml`, `hosts: <group>`, tagged with the role name.
 4. Document it (Features, Configuration, Tags above).
 
-For NVMe storage, add hosts with a dedicated `/dev/nvme0n1` disk to `[nvme_present]`. The role checks that the device exists and is a block device, creates a GPT table and partition only on a blank disk, preserves existing filesystems, and stops on an unexpected partition layout or if the partition is mounted elsewhere. `node4` is assigned to this group.
+For NVMe storage, add hosts with a dedicated `/dev/nvme0n1` disk to `[nvme_present]`. The role checks that the device exists and is a block device, creates a GPT table and partition only on a blank disk, preserves existing filesystems, and stops on an unexpected partition layout or if the partition is mounted elsewhere. `node3` and `node4` are assigned to this group.
 
 A host can belong to several groups at once — every matching play runs, in the order plays appear in `site.yml`. Check what a host will run with:
 
