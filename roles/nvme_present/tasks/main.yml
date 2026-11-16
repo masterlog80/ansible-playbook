@@ -36,25 +36,18 @@
   ansible.builtin.assert:
     that:
       - >-
-        (nvme_disk_info.partition_info.disk.table | default('unknown') == 'unknown'
-         and nvme_disk_info.partition_info.partitions | length == 0)
+        (nvme_disk_info.disk.table | default('unknown') == 'unknown'
+         and nvme_disk_info.partitions | length == 0)
         or
-        (nvme_disk_info.partition_info.disk.table | default('unknown') == 'gpt'
+        (nvme_disk_info.disk.table | default('unknown') == 'gpt'
          and
-         (nvme_disk_info.partition_info.partitions
+         (nvme_disk_info.partitions
           | selectattr('num', 'equalto', 1) | list | length == 1
-          or nvme_disk_info.partition_info.partitions | length == 0))
+          or nvme_disk_info.partitions | length == 0))
     fail_msg: >-
       {{ nvme_device }} already has a partition layout that this role does not
       recognize. No partition table or data was changed. Inspect the disk
       manually before proceeding.
-
-- name: Create a GPT partition table on a blank NVMe disk
-  community.general.parted:
-    device: "{{ nvme_device }}"
-    label: gpt
-    state: present
-  when: nvme_disk_info.partition_info.disk.table | default('unknown') == 'unknown'
 
 - name: Re-inspect the NVMe partition table
   community.general.parted:
@@ -66,13 +59,14 @@
 - name: Create the primary partition when it does not exist
   community.general.parted:
     device: "{{ nvme_device }}"
+    label: gpt
     number: 1
     part_start: 0%
     part_end: 100%
     fs_type: "{{ nvme_filesystem }}"
     state: present
   when: >-
-    nvme_disk_info.partition_info.partitions
+    nvme_disk_info.partitions
     | selectattr('num', 'equalto', 1) | list | length == 0
 
 - name: Create an ext4 filesystem if the partition has no filesystem
