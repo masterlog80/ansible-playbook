@@ -978,10 +978,15 @@
         state: present
       tags: [docker]
 
-    - name: Install Docker Engine + Compose plugin
+    - name: Install or upgrade Docker Engine, CLI, Buildx and Compose plugin to latest stable
+      # Use Docker's official stable APT repository and state=latest so every
+      # bootstrap run upgrades these components when newer stable packages
+      # are published. docker-compose-plugin provides the modern
+      # "docker compose" subcommand; a separate legacy docker-compose binary
+      # is intentionally not installed.
       ansible.builtin.apt:
         name: "{{ docker_packages }}"
-        state: present
+        state: latest
         update_cache: true
       tags: [docker]
 
