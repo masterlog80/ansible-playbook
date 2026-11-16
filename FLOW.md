@@ -92,11 +92,13 @@ Every operation below runs with `become: true` (root privilege for the task, obt
 54. **Raise `MaxAuthTries` to 20 for `{{ admin_user }}`** (a `Match User lorenzo` block appended at the true end of `sshd_config`) — avoids sshd dropping the connection with "too many authentication failures" before it reaches a valid key, which can happen when an SSH agent offers many keys → **Restart sshd**
 
 ### 11. Zsh — for every user in `zsh_users` (default: `{{ admin_user }}` and `root`)
-55. **Check if Oh My Zsh is already installed** for each user
-56. **Install Oh My Zsh** (official installer, `RUNZSH=no CHSH=no` so it doesn't try to switch shells interactively) — only for users where it isn't already present
-57. **Clone Powerlevel10k theme** (pinned to `powerlevel10k_version`) into each user's `.oh-my-zsh/custom/themes/`
-58. **Clone external zsh plugins** (`zsh-syntax-highlighting`, `zsh-autosuggestions` — not bundled with Oh My Zsh; each pinned to a release tag) for each user
-59. **Deploy `.zshrc`** (`templates/zshrc.j2`) for each user — enables the plugin set in `zsh_plugins`: `kubectl`, `kubectx`, `kube-ps1`, `git`, `zsh-syntax-highlighting`, `zsh-autosuggestions`, `docker`, `docker-compose`, `colorize`, `last-working-dir`
+55. **Check for the actual Oh My Zsh startup script** (`.oh-my-zsh/oh-my-zsh.sh`) for each user, rather than merely checking whether the directory exists
+56. **Remove an incomplete Oh My Zsh directory** when its startup script is missing; this lets the official installer perform a clean installation
+57. **Install Oh My Zsh** (official installer, `RUNZSH=no CHSH=no` so it doesn't try to switch shells interactively) only when the startup script is missing
+58. **Verify the startup script exists** and fail with a clear diagnostic if installation did not complete
+59. **Clone Powerlevel10k theme** (pinned to `powerlevel10k_version`) into each user's `.oh-my-zsh/custom/themes/`
+60. **Clone external zsh plugins** (`zsh-syntax-highlighting`, `zsh-autosuggestions` — not bundled with Oh My Zsh; each pinned to a release tag) for each user
+61. **Deploy `.zshrc`** (`templates/zshrc.j2`) for each user — enables the plugin set in `zsh_plugins`: `kubectl`, `kubectx`, `kube-ps1`, `git`, `zsh-syntax-highlighting`, `zsh-autosuggestions`, `docker`, `docker-compose`, `colorize`, `last-working-dir`
 
 ### 12. Local console login (password-authenticated)
 60. **Remove getty autologin override** (`/lib/systemd/system/getty@.service.d/override.conf`, if present) → notifies **Reload systemd**
