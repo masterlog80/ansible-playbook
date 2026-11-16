@@ -144,6 +144,17 @@ Runs after PLAY 2, only on hosts in the `[k3s_master]` inventory group.
 8. **Download Helm install script**
 9. **Run Helm install script** (version from `helm_version`, default latest)
 
+## PLAY 8 — K3S worker/agent role (\`hosts: k3s_nodes\`, tag \`k3s_agent\`)
+
+Runs after the NVMe storage play, only on hosts in \`[k3s_nodes]\`.
+
+1. Require the secret \`k3s_agent_token\` (provided through encrypted Ansible Vault or Semaphore's secret Variable Group; never committed to Git).
+2. Verify that \`/mnt/K3S\` is a mounted filesystem before installing K3S.
+3. Refuse to proceed if the K3S server service is already installed on this host.
+4. Download the official K3S installer.
+5. Run the installer with \`K3S_URL\`, the secret \`K3S_TOKEN\`, and \`INSTALL_K3S_EXEC="agent --data-dir /mnt/K3S/"\`. The install command suppresses output to avoid exposing the token and is skipped when the agent service already exists.
+6. Ensure the \`k3s-agent\` service is enabled and running.
+
 ## PLAYS 4–6 — `role_1` / `role_2` / `role_3` (placeholder roles)
 
 Each runs after PLAY 3, only on hosts in its matching inventory group (`[role_1]`, `[role_2]`, `[role_3]`). Currently each is a single `debug` task proving the pattern — see README's "Adding a new role" section for how to replace these with real work.
