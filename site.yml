@@ -2,7 +2,7 @@
 # =============================================================================
 # site.yml – System bootstrap playbook
 # =============================================================================
-# Structure: ONE playbook, EIGHT plays.
+# Structure: ONE playbook, SEVEN plays.
 #
 #   1. "System bootstrap (common baseline)" — hosts: all
 #      Runs on every managed node regardless of role: updates, packages,
@@ -31,7 +31,6 @@
 #
 # Run everything:            ansible-playbook site.yml
 # Only the baseline:         ansible-playbook site.yml --tags baseline
-# Only K3S nodes:             ansible-playbook site.yml --tags k3s
 # Only Docker nodes:          ansible-playbook site.yml --tags docker
 # Only K3S control-plane:      ansible-playbook site.yml --tags k3s_master
 # Only role_1/2/3 nodes:       ansible-playbook site.yml --tags role_1
@@ -877,36 +876,7 @@
       tags: [baseline, hostname]
 
 # =============================================================================
-# PLAY 2 — K3S role (hosts in [k3s_nodes])
-# =============================================================================
-- name: K3S role
-  hosts: k3s_nodes
-  become: true
-  tags: [k3s]
-
-  tasks:
-    # Security note: the K3S installer is fetched directly from
-    # https://get.k3s.io. When pinning a specific version via k3s_version,
-    # you can additionally verify the binary checksum from the official
-    # release page at https://github.com/k3s-io/k3s/releases
-    - name: Download K3S install script
-      ansible.builtin.get_url:
-        url: https://get.k3s.io
-        dest: /tmp/k3s-install.sh
-        mode: "0755"
-      tags: [k3s]
-
-    - name: Run K3S install script
-      ansible.builtin.command: /tmp/k3s-install.sh
-      environment:
-        INSTALL_K3S_VERSION: "{{ k3s_version }}"
-        INSTALL_K3S_EXEC: "{{ k3s_install_flags }}"
-      args:
-        creates: /usr/local/bin/k3s
-      tags: [k3s]
-
-# =============================================================================
-# PLAY 3 — Docker role (hosts in [docker_nodes])
+# PLAY 2 — Docker role (hosts in [docker_nodes])
 # =============================================================================
 - name: Docker role
   hosts: docker_nodes
@@ -1009,7 +979,7 @@
       tags: [docker]
 
 # =============================================================================
-# PLAY 4 — K3S control-plane / master role (hosts in [k3s_master])
+# PLAY 3 — K3S control-plane / master role (hosts in [k3s_master])
 # =============================================================================
 - name: K3S control-plane (master) role
   hosts: k3s_master
@@ -1103,7 +1073,7 @@
       tags: [k3s_master, helm]
 
 # =============================================================================
-# PLAY 5 — role_1 (hosts in [role_1])
+# PLAY 4 — role_1 (hosts in [role_1])
 # =============================================================================
 # Placeholder role added to demonstrate/exercise the pattern described in
 # README.md ("Adding a new role"). Replace the placeholder task below with
@@ -1122,7 +1092,7 @@
       tags: [role_1]
 
 # =============================================================================
-# PLAY 6 — role_2 (hosts in [role_2])
+# PLAY 5 — role_2 (hosts in [role_2])
 # =============================================================================
 # Placeholder role added to demonstrate/exercise the pattern described in
 # README.md ("Adding a new role"). Replace the placeholder task below with
@@ -1141,7 +1111,7 @@
       tags: [role_2]
 
 # =============================================================================
-# PLAY 7 — role_3 (hosts in [role_3])
+# PLAY 6 — role_3 (hosts in [role_3])
 # =============================================================================
 # Placeholder role added to demonstrate/exercise the pattern described in
 # README.md ("Adding a new role"). Replace the placeholder task below with
@@ -1160,7 +1130,7 @@
       tags: [role_3]
 
 # =============================================================================
-# PLAY 8 — NVMe storage role (hosts in [nvme_present])
+# PLAY 7 — NVMe storage role (hosts in [nvme_present])
 # =============================================================================
 # Initializes only a blank disk. Existing GPT partition 1/filesystems are
 # preserved; unexpected layouts and mounts elsewhere fail safely.
