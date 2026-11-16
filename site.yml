@@ -2,7 +2,7 @@
 # =============================================================================
 # site.yml – System bootstrap playbook
 # =============================================================================
-# Structure: ONE playbook, SEVEN plays.
+# Structure: ONE playbook, EIGHT plays.
 #
 #   1. "System bootstrap (common baseline)" — hosts: all
 #      Runs on every managed node regardless of role: updates, packages,
@@ -16,9 +16,9 @@
 #   3. "K3S control-plane (master) role" — hosts: k3s_master
 #      Only runs on hosts in the [k3s_master] inventory group.
 #
-#   4-6. "role_1" / "role_2" / "role_3" — hosts: role_1 / role_2 / role_3
+#   5-7. "role_1" / "role_2" / "role_3" — hosts: role_1 / role_2 / role_3
 #      Placeholder roles; only run on hosts in their matching group.
-#   7. "NVMe storage role" — hosts: nvme_present; prepares /dev/nvme0n1
+#   8. "NVMe storage role" — hosts: nvme_present; prepares /dev/nvme0n1
 #      as ext4 and mounts it at /mnt/K3S.
 #
 # A host's ROLE (what gets installed beyond the common baseline) is decided
@@ -30,6 +30,7 @@
 # Only the baseline:         ansible-playbook site.yml --tags baseline
 # Only Docker nodes:          ansible-playbook site.yml --tags docker
 # Only K3S control-plane:      ansible-playbook site.yml --tags k3s_master
+# Only K3S agents:              ansible-playbook site.yml --tags k3s_nodes
 # Only role_1/2/3 nodes:       ansible-playbook site.yml --tags role_1
 # Only NVMe nodes:             ansible-playbook site.yml --tags nvme_present
 # Just one host:               ansible-playbook site.yml --limit node1
@@ -1070,6 +1071,52 @@
       tags: [k3s_master, helm]
 
 # =============================================================================
+# PLAY 4 — K3S worker/agent role (hosts in k3s_nodes)
+# =============================================================================
+- name: K3S worker/agent role
+  hosts: k3s_nodes
+  become: true
+  tags: [k3s_nodes]
+
+  pre_tasks:
+    - name: Ensure Semaphore supplied the K3S agent token
+      ansible.builtin.assert:
+        that:
+          - lookup('ansible.builtin.env', 'K3S_AGENT_TOKEN') | length > 0
+        fail_msg: >-
+          K3S_AGENT_TOKEN is missing. Add it to the Semaphore Variable Group
+          as a secret of type Environment variable and attach that group to
+          the task template. See SETTINGS.md.
+      tags: [k3s_nodes]
+
+  tasks:
+    - name: Download K3S install script
+      ansible.builtin.get_url:
+        url: https://get.k3s.io
+        dest: /tmp/k3s-install.sh
+        mode: "0755"
+      tags: [k3s_nodes]
+
+    - name: Install K3S agent and join the existing control plane
+      ansible.builtin.command: /tmp/k3s-install.sh
+      environment:
+        K3S_URL: "{{ k3s_agent_server_url }}"
+        K3S_TOKEN: "{{ lookup('ansible.builtin.env', 'K3S_AGENT_TOKEN') }}"
+        INSTALL_K3S_VERSION: "{{ k3s_agent_version }}"
+        INSTALL_K3S_EXEC: "agent --data-dir {{ k3s_agent_data_dir }}"
+      args:
+        creates: /etc/systemd/system/k3s-agent.service
+      no_log: true
+      tags: [k3s_nodes]
+
+    - name: Ensure K3S agent service is running and enabled
+      ansible.builtin.service:
+        name: k3s-agent
+        state: started
+        enabled: true
+      tags: [k3s_nodes]
+
+# =============================================================================
 # PLAY 4 — role_1 (hosts in [role_1])
 # =============================================================================
 # Placeholder role added to demonstrate/exercise the pattern described in
@@ -1089,7 +1136,7 @@
       tags: [role_1]
 
 # =============================================================================
-# PLAY 5 — role_2 (hosts in [role_2])
+# PLAY 6 — role_2 (hosts in [role_2])
 # =============================================================================
 # Placeholder role added to demonstrate/exercise the pattern described in
 # README.md ("Adding a new role"). Replace the placeholder task below with
@@ -1108,7 +1155,7 @@
       tags: [role_2]
 
 # =============================================================================
-# PLAY 6 — role_3 (hosts in [role_3])
+# PLAY 7 — role_3 (hosts in [role_3])
 # =============================================================================
 # Placeholder role added to demonstrate/exercise the pattern described in
 # README.md ("Adding a new role"). Replace the placeholder task below with
@@ -1127,7 +1174,7 @@
       tags: [role_3]
 
 # =============================================================================
-# PLAY 7 — NVMe storage role (hosts in [nvme_present])
+# PLAY 8 — NVMe storage role (hosts in [nvme_present])
 # =============================================================================
 # Initializes only a blank disk. Existing GPT partition 1/filesystems are
 # preserved; unexpected layouts and mounts elsewhere fail safely.
