@@ -111,16 +111,35 @@ password entirely.)
 
 ---
 
-## 7. Attach the Variable Group
+## 7. K3S agent token — keep it in Semaphore
 
-Attach `playbook-secrets` to the Ansible task template under **Variable Groups**.
+The K3S agent join token must **never** be committed to this public repository or
+placed in `group_vars`, inventory, or plaintext template variables.
+
+In **Variable Groups**, create (or edit) a group named `k3s-agent-secrets`. Under
+**Secrets**, add one secret with:
+
+| Field | Value |
+|---|---|
+| Name | `K3S_AGENT_TOKEN` |
+| Secret type | **Environment variable** |
+| Value | The K3S server node's join token |
+
+Paste the token directly into Semaphore's masked secret field. Do not put it in a
+task message, extra-vars field, or shell command. Semaphore exports this secret to
+the Ansible task process as `K3S_AGENT_TOKEN`; the playbook reads it with Ansible's
+environment lookup and suppresses output for the installer task.
+
+## 8. Attach the Variable Groups
+
+Attach both `playbook-secrets` and `k3s-agent-secrets` to the Ansible task template under **Variable Groups**. If Semaphore permits separate template associations, attach `k3s-agent-secrets` only to templates that run the `k3s_nodes` play.
 In older Semaphore UI/API terminology this association may be labelled **Environment**.
 Confirm that the template is actually using this group; otherwise Ansible will not
 receive the two password hashes.
 
 ---
 
-## 8. Task Templates
+## 9. Task Templates
 
 Create one template per operation. All of them use **Repository:** `ansible-playbook`,
 **Inventory:** the one from step 5, **Environment:** `default` (step 7), **Playbook:**
@@ -131,7 +150,8 @@ differ:
 |----------|---------|----------------|
 | **Bootstrap (new node)** | `bootstrap-root` | `--limit <new-node>` (run once per new node); override the connecting user to `root` for this template |
 | **Full run (baseline + roles)** | `lorenzo-key` | none — applies baseline plus whichever role(s) each host belongs to |
-| **K3S only** | `lorenzo-key` | `--tags k3s` |
+| **K3S agents** | `lorenzo-key` | `--tags k3s_nodes` (requires `k3s-agent-secrets`) |
+| **K3S control-plane only** | `lorenzo-key` | `--tags k3s_master` |
 | **Docker only** | `lorenzo-key` | `--tags docker` |
 | **K3S control-plane only** | `lorenzo-key` | `--tags k3s_master` |
 
@@ -140,7 +160,7 @@ role") — one row per tag, `lorenzo-key` credential, no other changes.
 
 ---
 
-## 9. Onboarding a new node — the actual click-through
+## 10. Onboarding a new node — the actual click-through
 
 1. Add the node to `inventory/hosts.ini` and a matching `host_vars/<name>.yml` (PR, per
    README).
