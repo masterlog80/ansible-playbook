@@ -20,8 +20,8 @@
 #      Placeholder roles; only run on hosts in their matching group.
 #   7. "NVMe storage role" — hosts: nvme_present; prepares /dev/nvme0n1
 #      as ext4 and mounts it at /mnt/K3S.
-#   8. "K3S worker/agent role" — hosts: k3s_nodes; joins the control plane
-#      using a secret token and /mnt/K3S as its data directory.
+#   8. "K3S worker/agent role" — hosts: k3s_nodes; installs or updates the
+#      agent using a secret token and /mnt/K3S as its data directory.
 #
 # A host's ROLE (what gets installed beyond the common baseline) is decided
 # entirely by inventory group membership (inventory/hosts.ini) — not by
@@ -1166,7 +1166,7 @@
       when: not k3s_agent_service.stat.exists
       tags: [k3s_agent]
 
-    - name: Ensure the K3S agent token is supplied for a new agent
+    - name: Ensure the K3S agent token is supplied for installation or update
       ansible.builtin.assert:
         that:
           - k3s_agent_token is defined
