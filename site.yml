@@ -665,8 +665,8 @@
     # 11. ZSH – Oh My Zsh, Powerlevel10k, plugins (for every user in zsh_users)
     # -------------------------------------------------------------------------
     - name: Check if Oh My Zsh startup script is installed
-      # Check the actual entrypoint, not just the directory. A previous
-      # interrupted/failed install can leave .oh-my-zsh present but unusable.
+      # Check the actual entry point sourced by .zshrc, not just the directory.
+      # A previous/incomplete install can leave .oh-my-zsh present without this file.
       ansible.builtin.stat:
         path: "{{ item.home }}/.oh-my-zsh/oh-my-zsh.sh"
       become: true
@@ -678,11 +678,13 @@
       tags: [baseline, zsh]
 
     - name: Remove incomplete Oh My Zsh installation
+      # The official installer refuses to install into an existing ZSH directory.
+      # Remove only a broken installation (missing oh-my-zsh.sh); the following
+      # tasks recreate the theme and external plugins after a clean install.
       ansible.builtin.file:
         path: "{{ item.item.home }}/.oh-my-zsh"
         state: absent
       become: true
-      become_user: "{{ item.item.name }}"
       loop: "{{ omzsh_stat.results }}"
       loop_control:
         label: "{{ item.item.name }}"
@@ -708,7 +710,7 @@
       when: not item.stat.exists
       tags: [baseline, zsh]
 
-    - name: Verify Oh My Zsh installation
+    - name: Verify Oh My Zsh startup script was installed
       ansible.builtin.stat:
         path: "{{ item.home }}/.oh-my-zsh/oh-my-zsh.sh"
       become: true
@@ -719,14 +721,12 @@
         label: "{{ item.name }}"
       tags: [baseline, zsh]
 
-    - name: Fail if Oh My Zsh startup script is missing
+    - name: Fail if Oh My Zsh installation is incomplete
       ansible.builtin.assert:
         that:
           - item.stat.exists
           - item.stat.isreg
-        fail_msg: >-
-          Oh My Zsh installation is incomplete for {{ item.item.name }}:
-          {{ item.item.home }}/.oh-my-zsh/oh-my-zsh.sh is missing.
+        fail_msg: "Oh My Zsh installation failed for {{ item.item.name }}: {{ item.item.home }}/.oh-my-zsh/oh-my-zsh.sh is missing. Check network access to GitHub and rerun with --tags zsh."
       loop: "{{ omzsh_verify.results }}"
       loop_control:
         label: "{{ item.item.name }}"
