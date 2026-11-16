@@ -115,14 +115,7 @@ After this, the physical console shows the stock `login:` / `Password:` prompt, 
 
 ---
 
-## PLAY 2 — K3S role (`hosts: k3s_nodes`, tag `k3s`)
-
-Runs after PLAY 1, only on hosts in the `[k3s_nodes]` inventory group.
-
-1. **Download K3S install script** (`https://get.k3s.io` → `/tmp/k3s-install.sh`)
-2. **Run K3S install script** — `INSTALL_K3S_VERSION` / `INSTALL_K3S_EXEC` from `group_vars/k3s_nodes.yml` (`k3s_version`, `k3s_install_flags`); skipped if `/usr/local/bin/k3s` already exists
-
-## PLAY 3 — Docker role (`hosts: docker_nodes`, tag `docker`)
+## PLAY 2 — Docker role (`hosts: docker_nodes`, tag `docker`)
 
 Runs after PLAY 1, only on hosts in the `[docker_nodes]` inventory group.
 
@@ -137,9 +130,9 @@ Runs after PLAY 1, only on hosts in the `[docker_nodes]` inventory group.
 9. **Ensure Docker service is running and enabled**
 10. **Add users to the `docker` group** (`docker_group_members`, default: just `{{ admin_user }}`)
 
-## PLAY 4 — K3S control-plane / master role (`hosts: k3s_master`, tag `k3s_master`)
+## PLAY 3 — K3S control-plane / master role (`hosts: k3s_master`, tag `k3s_master`)
 
-Runs after PLAY 3, only on hosts in the `[k3s_master]` inventory group.
+Runs after PLAY 2, only on hosts in the `[k3s_master]` inventory group.
 
 1. **Download K3S install script**
 2. **Run K3S install script** with control-plane flags (`k3s_master_install_flags`, default `--disable traefik --disable servicelb --disable metrics-server`)
@@ -151,9 +144,9 @@ Runs after PLAY 3, only on hosts in the `[k3s_master]` inventory group.
 8. **Download Helm install script**
 9. **Run Helm install script** (version from `helm_version`, default latest)
 
-## PLAYS 5–7 — `role_1` / `role_2` / `role_3` (placeholder roles)
+## PLAYS 4–6 — `role_1` / `role_2` / `role_3` (placeholder roles)
 
-Each runs after PLAY 4, only on hosts in its matching inventory group (`[role_1]`, `[role_2]`, `[role_3]`). Currently each is a single `debug` task proving the pattern — see README's "Adding a new role" section for how to replace these with real work.
+Each runs after PLAY 3, only on hosts in its matching inventory group (`[role_1]`, `[role_2]`, `[role_3]`). Currently each is a single `debug` task proving the pattern — see README's "Adding a new role" section for how to replace these with real work.
 
 ---
 
@@ -161,10 +154,10 @@ Each runs after PLAY 4, only on hosts in its matching inventory group (`[role_1]
 
 - **SSH lockdown (baseline steps 47–54) runs *after* user creation, password setup, sudo rules and key import (steps 34–39).** This is deliberate: the very first run on a brand-new node connects as `root` + password (since `{{ admin_user }}` doesn't exist yet to connect as), and that run needs to create `{{ admin_user }}`, install its key, set the passwords and sudo rules *before* disabling root SSH — otherwise the node would be locked out mid-run. See README's "SSH access" section for the full two-phase credential model.
 - **The `Match User {{ admin_user }}` MaxAuthTries block (step 54) is always the last thing appended to `sshd_config`.** Any future task that edits `sshd_config` must come *before* it (or use `insertafter`/an anchor to a known earlier directive) — anything appended after it via a bare `blockinfile`/`lineinfile` default (EOF) would be incorrectly scoped inside that `Match` block instead of applying globally. Step 53 (`AllowUsers`) already does this correctly, anchored with `insertafter: '^PasswordAuthentication'`.
-- **A host can belong to more than one role group** (`k3s_nodes`, `docker_nodes`, `k3s_master`, `nvme_present`, `role_1`–`role_3`), and gets every matching play in the order shown above (PLAY 2 → 3 → 4 → 5 → 6 → 7 → 8). Don't put the same host in both `k3s_nodes` and `k3s_master` — whichever K3S install runs first wins the install flags (the second is skipped via its `creates:` guard).
+- **A host can belong to more than one role group** (`k3s_nodes`, `docker_nodes`, `k3s_master`, `nvme_present`, `role_1`–`role_3`), and gets every matching play in order. K3S installation is performed only in `[k3s_master]`; `[k3s_nodes]` is reserved for worker/agent nodes, whose installation and cluster joining are not automated by this playbook.
 
 
-## PLAY 8 — NVMe storage role (`nvme_present`)
+## PLAY 7 — NVMe storage role (`nvme_present`)
 
 **Runs on:** hosts explicitly listed in `[nvme_present]`. The default target is `/dev/nvme0n1`, mounted at `/mnt/K3S`.
 
