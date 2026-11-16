@@ -5,3 +5,7 @@ nvme_partition: /dev/nvme0n1p1
 nvme_mount_path: /mnt/K3S
 nvme_filesystem: ext4
 nvme_mount_options: defaults
+# Accept typical advertised 128 GB NVMe capacities (decimal GB) and 128 GiB.
+# The preflight is intentionally completed before any partition/filesystem changes.
+nvme_expected_size_min_bytes: 120000000000
+nvme_expected_size_max_bytes: 140000000000
