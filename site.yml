@@ -699,7 +699,6 @@
         group: root
         mode: "0644"
         timeout: 15
-      timeout: 90
       tags: [baseline, zsh]
 
     - name: Install Oh My Zsh
@@ -722,7 +721,8 @@
         OVERWRITE_CONFIRMATION: "no"
       args:
         creates: "{{ item.item.home }}/.oh-my-zsh/oh-my-zsh.sh"
-      timeout: 120
+      async: 120
+      poll: 5
       loop: "{{ omzsh_stat.results }}"
       loop_control:
         label: "{{ item.item.name }}"
@@ -760,7 +760,8 @@
         update: false
       become: true
       become_user: "{{ item.name }}"
-      timeout: 180
+      async: 180
+      poll: 5
       loop: "{{ zsh_users }}"
       loop_control:
         label: "{{ item.name }}"
@@ -797,7 +798,8 @@
         update: false
       become: true
       become_user: "{{ item.0.name }}"
-      timeout: 180
+      async: 180
+      poll: 5
       with_nested:
         - "{{ zsh_users }}"
         - "{{ zsh_external_plugins }}"
