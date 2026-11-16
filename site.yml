@@ -21,6 +21,8 @@
 #
 #   5-7. "role_1" / "role_2" / "role_3" — hosts: role_1 / role_2 / role_3
 #      Placeholder roles; only run on hosts in their matching group.
+#   8. "NVMe storage role" — hosts: nvme_present; prepares /dev/nvme0n1
+#      as ext4 and mounts it at /mnt/K3S.
 #
 # A host's ROLE (what gets installed beyond the common baseline) is decided
 # entirely by inventory group membership (inventory/hosts.ini) — not by
