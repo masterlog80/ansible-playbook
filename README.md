@@ -94,7 +94,7 @@ One playbook (`site.yml`), one play per role. A host's role(s) come from its inv
 | K3S control-plane | `k3s_master` | Installs K3S with control-plane flags, taint, FluxCD and Helm |
 | `role_1` / `role_2` / `role_3` | matching group | Placeholders — replace with real work when needed |
 
-K3S installation runs only for hosts in `[k3s_master]`. `[k3s_nodes]` is reserved for worker/agent classification; worker installation and joining an existing cluster are not yet automated. A host can be in any combination of the other role groups (baseline-only is fine too). See "Adding a role" below to add another.
+K3S server installation runs only for hosts in `[k3s_master]`. Hosts in `[k3s_nodes]` install the K3S Agent and join the configured control plane; the play requires `/mnt/K3S` to be mounted and a secret `k3s_agent_token` when the agent is not already installed. A host can be in any combination of the other role groups (baseline-only is fine too). See "Adding a role" below to add another.
 
 ---
 
